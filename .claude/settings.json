@@ -1,0 +1,48 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:huggingface.co)",
+      "WebSearch",
+      "mcp__fetch__fetch",
+      "Bash(pacman -Ss fiftyone)",
+      "Bash(yay -Ss fiftyone)",
+      "Bash(yay -Sa fiftyone)",
+      "Bash(yay -Ss python-fiftyone)",
+      "WebFetch(domain:openaccess.thecvf.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:dblp.org)",
+      "WebFetch(domain:scholar.google.com)",
+      "WebFetch(domain:www.semanticscholar.org)",
+      "WebFetch(domain:cvpr.thecvf.com)",
+      "WebFetch(domain:cvpr2024.thecvf.com)",
+      "WebFetch(domain:cvpr2024-summaries.github.io)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:cvpr2025.thecvf.com)",
+      "Read(//home/chuanshanjia/论文/**)",
+      "WebFetch(domain:cg.cs.tsinghua.edu.cn)",
+      "Bash(grep -n \"cuda_flags\\\\b\" /home/chuanshanjia/.conda/envs/jittor_env/lib/python3.13/site-packages/jittor/compiler.py | head -20)",
+      "Read(//home/chuanshanjia/.conda/envs/jittor_env/lib/python3.13/site-packages/jittor/**)",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ]
+  },
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notify-send",
+            "args": [
+              "Claude Code - 权限请求",
+              "Claude 请求执行: ${tool_input.command}\n工具: ${tool_name}"
+            ],
+            "shell": "bash",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
