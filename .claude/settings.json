@@ -22,7 +22,10 @@
       "WebFetch(domain:cg.cs.tsinghua.edu.cn)",
       "Bash(grep -n \"cuda_flags\\\\b\" /home/chuanshanjia/.conda/envs/jittor_env/lib/python3.13/site-packages/jittor/compiler.py | head -20)",
       "Read(//home/chuanshanjia/.conda/envs/jittor_env/lib/python3.13/site-packages/jittor/**)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:www.youtube.com)",
+      "Bash(pdftotext \"/home/chuanshanjia/论文/Towards_Better_Distortion_Feature_Learning_for_Object_Detection_in_Top-View_Fisheye_Cameras.pdf\" /tmp/fisheye_paper.txt)",
+      "Read(//tmp/**)"
     ]
   },
   "hooks": {
