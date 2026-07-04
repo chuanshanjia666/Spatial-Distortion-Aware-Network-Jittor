@@ -13,13 +13,19 @@ RUN apt-get update && apt-get install -y \
     python3.10-dev \
     python3-pip \
     g++ \
+    libgl1 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1
 
+RUN python3 -m pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
+    python3 -m pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn
+
 RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
-RUN python3 -m pip install --no-cache-dir jittor
+RUN python3 -m pip install --no-cache-dir jittor opencv-python
+
 
 WORKDIR /workspace

@@ -4,6 +4,8 @@ SDANet training script.
 
 All hyperparameters are read from ``config.py`` — no command-line arguments required.
 
+Supports both PyTorch and Jittor backends (controlled by config.BACKEND).
+
 Usage:
     python tools/train.py
 
@@ -13,36 +15,92 @@ To override settings, edit ``config.py`` before running.
 import os
 import sys
 import numpy as np
-import torch
-from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
     BACKEND, DEVICE, NUM_WORKERS, BATCH_SIZE, INPUT_SIZE,
     STEP_BATCH_SIZE, TRAIN_DATASETS, VAL_DATASETS, TEST_DATASETS,
-    USE_ACCUMULATION_STEP, USE_COSINE_SCHEDULER,
-    LR, MOMENTUM, WEIGHT_DECAY, WARMUP_ITERS, EPOCHS, ANCHORS, STRIDES,
+    USE_ACCUMULATION_STEP, EPOCHS, ANCHORS, STRIDES,
     RESUME, OUTPUT_DIR,
 )
+
+if BACKEND == "pytorch":
+    import torch
+    from torch.utils.data import DataLoader
+else:
+    import jittor as jt
+
 from util import (
     compute_map, SDALoss,
     decode_predictions, collate_fn, build_datasets, build_model,
-    warmup_lr, cosine_annealing_lr,
+    build_optimizer, build_lr_scheduler,
 )
 
 
-# ===================================================================
+# ---------------------------------------------------------------------------
+# Jittor DataLoader shim
+# ---------------------------------------------------------------------------
+if BACKEND == "jittor":
+    import math
+    import jittor as jt
+
+    class DataLoader:
+        """Minimal DataLoader for Jittor (sequential + optional shuffle)."""
+
+        def __init__(self, dataset, batch_size=1, shuffle=False,
+                     num_workers=0, collate_fn=None, pin_memory=False,
+                     drop_last=False):
+            self.dataset = dataset
+            self.batch_size = batch_size
+            self.shuffle = shuffle
+            self.collate_fn = collate_fn
+            self.drop_last = drop_last
+            self._rng = None
+
+            ds_len = len(dataset)
+            if drop_last:
+                self._num_batches = ds_len // batch_size
+            else:
+                self._num_batches = math.ceil(ds_len / batch_size)
+
+        def __len__(self):
+            return self._num_batches
+
+        def __iter__(self):
+            ds_len = len(self.dataset)
+            indices = list(range(ds_len))
+            if self.shuffle:
+                if self._rng is None:
+                    self._rng = jt.rand(ds_len).argsort()
+                else:
+                    self._rng = jt.rand(ds_len).argsort()
+                indices = self._rng.numpy().tolist()
+
+            batch = []
+            for idx in indices:
+                batch.append(self.dataset[idx])
+                if len(batch) == self.batch_size:
+                    yield self._collate(batch)
+                    batch = []
+            if batch and not self.drop_last:
+                yield self._collate(batch)
+
+        def _collate(self, batch):
+            if self.collate_fn is not None:
+                return self.collate_fn(batch)
+            return batch
+
+
+# ---------------------------------------------------------------------------
 #  Main
-# ===================================================================
+# ---------------------------------------------------------------------------
 
 def main():
     print(f"Backend: {BACKEND}, Device: {DEVICE}")
     print(f"Train datasets: {TRAIN_DATASETS}")
     print(f"Val datasets:   {VAL_DATASETS}")
-    print(f"Test datasets:  {TEST_DATASETS}")
     print(f"Input size: {INPUT_SIZE}, Step batch: {STEP_BATCH_SIZE}, "
           f"Epochs: {EPOCHS}")
-    print(f"Use cosine scheduler: {USE_COSINE_SCHEDULER}")
 
     # ---- Datasets ----
     train_ds, val_ds = build_datasets(TRAIN_DATASETS, VAL_DATASETS)
@@ -58,14 +116,15 @@ def main():
 
     train_loader = DataLoader(
         train_ds, batch_size=STEP_BATCH_SIZE, shuffle=True,
-        num_workers=NUM_WORKERS, collate_fn=collate_fn, pin_memory=True,
-        drop_last=True,
+        num_workers=NUM_WORKERS, collate_fn=collate_fn,
+        pin_memory=(DEVICE == "cuda"), drop_last=True,
     )
     val_loader = None
     if val_ds is not None:
         val_loader = DataLoader(
             val_ds, batch_size=STEP_BATCH_SIZE, shuffle=False,
-            num_workers=NUM_WORKERS, collate_fn=collate_fn, pin_memory=True,
+            num_workers=NUM_WORKERS, collate_fn=collate_fn,
+            pin_memory=(DEVICE == "cuda"),
         )
 
     # ---- Model ----
@@ -73,12 +132,12 @@ def main():
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     print(f"Model params: {n_params:.2f}M")
 
-    # ---- Loss & optimizer ----
+    # ---- Loss & optimizer & scheduler ----
     criterion = SDALoss(total_classes, ANCHORS, STRIDES)
-    optimizer = torch.optim.SGD(
-        model.parameters(), lr=LR, momentum=MOMENTUM,
-        weight_decay=WEIGHT_DECAY,
-    )
+    optimizer = build_optimizer(model)
+
+    max_iters = len(train_loader) * EPOCHS
+    lr_scheduler = build_lr_scheduler(optimizer, max_iters)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -92,7 +151,10 @@ def main():
     start_epoch = 0
     global_step = 0
     if RESUME and os.path.isfile(RESUME):
-        ckpt = torch.load(RESUME, map_location='cpu', weights_only=True)
+        if BACKEND == "pytorch":
+            ckpt = torch.load(RESUME, map_location='cpu', weights_only=True)
+        else:
+            ckpt = jt.load(RESUME)
         model.load_state_dict(ckpt['model_state'])
         optimizer.load_state_dict(ckpt['optimizer_state'])
         start_epoch = ckpt.get('epoch', 0)
@@ -100,7 +162,6 @@ def main():
         print(f"Resumed from {RESUME} (epoch {start_epoch}, step {global_step})")
 
     # ---- Training loop ----
-    max_iters = len(train_loader) * EPOCHS
     for epoch in range(start_epoch + 1, EPOCHS + 1):
         model.train()
         epoch_loss = 0.0
@@ -110,42 +171,60 @@ def main():
             global_step += 1
 
             # LR schedule
-            warmup_lr(optimizer, WARMUP_ITERS, global_step)
-            if USE_COSINE_SCHEDULER and global_step >= WARMUP_ITERS:
-                cosine_annealing_lr(optimizer, max_iters, global_step)
+            lr_scheduler.step(global_step)
 
             if DEVICE == "cuda":
-                images = images.cuda()
+                if BACKEND == "pytorch":
+                    images = images.cuda()
+                else:
+                    images = images.cuda()
 
             preds = model(images)
             loss = criterion(preds, boxes_list, images)
             loss = loss / accumulation_steps
-            loss.backward()
+
+            if BACKEND == "pytorch":
+                loss.backward()
+            else:
+                optimizer.backward(loss)
 
             if (batch_idx + 1) % accumulation_steps == 0:
                 optimizer.step()
                 optimizer.zero_grad()
 
-            epoch_loss += loss.item() * accumulation_steps
+            batch_loss = loss.item() if BACKEND == "pytorch" else loss.numpy()[0]
+            epoch_loss += batch_loss * accumulation_steps
 
             if batch_idx % 20 == 0:
+                cur_lr = optimizer.param_groups[0]['lr']
                 print(f"  epoch {epoch:3d} | iter {batch_idx:4d}/{len(train_loader)} "
-                      f"| loss {loss.item() * accumulation_steps:.4f} "
-                      f"| lr {optimizer.param_groups[0]['lr']:.6f}")
+                      f"| loss {batch_loss * accumulation_steps:.4f} "
+                      f"| lr {cur_lr:.6f}")
 
         avg_loss = epoch_loss / len(train_loader)
         print(f"--- epoch {epoch} done | avg_loss={avg_loss:.4f} ---")
 
-        # Save checkpoint
-        ckpt = {
-            'epoch': epoch,
-            'model_state': model.state_dict(),
-            'optimizer_state': optimizer.state_dict(),
-            'global_step': global_step,
-        }
-        ckpt_path = os.path.join(OUTPUT_DIR, f"sdanet_epoch{epoch:03d}.pth")
-        torch.save(ckpt, ckpt_path)
-        print(f"  saved: {ckpt_path}")
+        # ---- Save checkpoint ----
+        if BACKEND == "pytorch":
+            ckpt = {
+                'epoch': epoch,
+                'model_state': model.state_dict(),
+                'optimizer_state': optimizer.state_dict(),
+                'global_step': global_step,
+            }
+            ckpt_path = os.path.join(OUTPUT_DIR, f"sdanet_epoch{epoch:03d}.pth")
+            torch.save(ckpt, ckpt_path)
+            print(f"  saved: {ckpt_path}")
+        else:
+            ckpt = {
+                'epoch': epoch,
+                'model_state': model.state_dict(),
+                'optimizer_state': optimizer.state_dict(),
+                'global_step': global_step,
+            }
+            ckpt_path = os.path.join(OUTPUT_DIR, f"sdanet_epoch{epoch:03d}.pth")
+            jt.save(ckpt, ckpt_path)
+            print(f"  saved: {ckpt_path}")
 
         # ---- Validation ----
         if val_loader is not None:
@@ -153,26 +232,39 @@ def main():
             val_loss = 0.0
             all_preds = []
             all_targets = []
-            with torch.no_grad():
-                for images, boxes_list in val_loader:
-                    if DEVICE == "cuda":
+            for images, boxes_list in val_loader:
+                if DEVICE == "cuda":
+                    if BACKEND == "pytorch":
                         images = images.cuda()
-                    preds = model(images)
-                    val_loss += criterion(preds, boxes_list, images).item()
-                    # Decode predictions for mAP
-                    dets = decode_predictions(preds)
-                    all_preds.extend(dets)
-                    gts = []
-                    for b in boxes_list:
+                    else:
+                        images = images.cuda()
+
+                preds = model(images)
+                val_loss += criterion(preds, boxes_list, images)
+
+                # Decode predictions for mAP
+                dets = decode_predictions(preds)
+                all_preds.extend(dets)
+                gts = []
+                for b in boxes_list:
+                    if BACKEND == "pytorch":
                         bn = b.cpu().numpy() if torch.is_tensor(b) else b
-                        gts.append((bn, np.zeros(
+                    else:
+                        bn = b.numpy() if hasattr(b, 'numpy') else b
+                    gts.append((
+                        bn,
+                        np.zeros(
                             len(bn) if hasattr(bn, '__len__') else 0,
-                            dtype=np.int64)))
-                    all_targets.extend(gts)
+                            dtype=np.int64
+                        )
+                    ))
+                all_targets.extend(gts)
+
+            val_loss = val_loss.item() if BACKEND == "pytorch" else val_loss.numpy()[0]
             val_loss = val_loss / len(val_loader)
             if total_classes > 0 and len(all_preds) > 0:
                 map_results = compute_map(all_preds, all_targets,
-                                          [f"class_{i}" for i in range(total_classes)])
+                                           [f"class_{i}" for i in range(total_classes)])
                 print(f"  val_loss={val_loss:.4f}  mAP@50={map_results['mAP']:.4f}")
             else:
                 print(f"  val_loss={val_loss:.4f}")

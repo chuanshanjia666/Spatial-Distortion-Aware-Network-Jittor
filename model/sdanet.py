@@ -121,10 +121,14 @@ class SDANet(nn.Module):
                 backbone_state[k] = v
 
         if backbone_state:
-            missing, unexpected = self.backbone.load_state_dict(
-                backbone_state, strict=False)
-            print(f"[SDANet] Loaded pretrained backbone: {len(backbone_state)} keys "
-                  f"(missing {len(missing)}, unexpected {len(unexpected)})")
+            if BACKEND == "pytorch":
+                missing, unexpected = self.backbone.load_state_dict(
+                    backbone_state, strict=False)
+                print(f"[SDANet] Loaded pretrained backbone: {len(backbone_state)} keys "
+                      f"(missing {len(missing)}, unexpected {len(unexpected)})")
+            else:
+                self.backbone.load_state_dict(backbone_state)
+                print(f"[SDANet] Loaded pretrained backbone: {len(backbone_state)} keys")
         else:
             print(f"[SDANet] WARNING: no backbone keys found in {path}")
 
@@ -143,10 +147,17 @@ class SDANet(nn.Module):
         preds = self.head(fpn_feats)
         return preds
 
+    def execute(self, x):
+        """Jittor entry point — delegates to forward."""
+        return self.forward(x)
+
 
 # Smoke test
 if __name__ == "__main__":
     from config import DEVICE, INPUT_SIZE
+
+    if BACKEND == "pytorch":
+        import torch
 
     print(f"Backend: {BACKEND}, Device: {DEVICE}")
     print(f"Base kernels: {SDA_BASE_KERNELS}")
@@ -159,11 +170,19 @@ if __name__ == "__main__":
     trainable   = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
     print(f"Total params: {total_params:.2f}M  |  Trainable: {trainable:.2f}M")
 
-    dummy = torch.randn(1, 3, INPUT_SIZE, INPUT_SIZE)
+    if BACKEND == "pytorch":
+        dummy = torch.randn(1, 3, INPUT_SIZE, INPUT_SIZE)
+    else:
+        import jittor as jt
+        dummy = jt.random([1, 3, INPUT_SIZE, INPUT_SIZE])
     if DEVICE == "cuda":
         dummy = dummy.cuda()
 
-    with torch.no_grad():
+    if BACKEND == "pytorch":
+        with torch.no_grad():
+            preds = model(dummy)
+    else:
+        model.eval()
         preds = model(dummy)
 
     print(f"\nPredictions ({INPUT_SIZE}x{INPUT_SIZE} input):")
@@ -173,7 +192,7 @@ if __name__ == "__main__":
     A = model.num_anchors
     F = 6
     for s, p in zip(model.strides, preds):
-        H_s = INPUT_SIZE // s
-        assert p.shape == (1, A * F, H_s, H_s), (
-            f"Unexpected shape: {p.shape} vs {(1, A*F, H_s, H_s)}")
+        H_s = int(INPUT_SIZE // s)
+        assert tuple(p.shape) == (1, A * F, H_s, H_s), (
+            f"Unexpected shape: {tuple(p.shape)} vs {(1, A*F, H_s, H_s)}")
     print("\nAll output shapes correct")

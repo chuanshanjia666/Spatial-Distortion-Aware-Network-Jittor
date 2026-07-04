@@ -1,0 +1,17 @@
+name: sdanet
+channels:
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - cuda-toolkit=11.8
+  - cudnn=8
+  - gcc=11
+  - gxx=11
+  - openmpi
+  - libgomp
+  - pip
+  - pip:
+      - jittor
+      - opencv-python

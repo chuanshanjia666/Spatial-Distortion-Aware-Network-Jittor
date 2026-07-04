@@ -16,13 +16,12 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import BACKEND, USE_ACCUMULATION_STEP, GN_NUM_GROUPS
 
+from model.op.functional import relu, pad, cat, normal_, constant_
+
 if BACKEND == "pytorch":
-    import torch
     import torch.nn as nn
-    import torch.nn.functional as F
     Module = nn.Module
 else:
-    import jittor as jt
     import jittor.nn as nn
     Module = nn.Module
 
@@ -95,16 +94,15 @@ class SDAConv(Module):
 
         # ---- BatchNorm / GroupNorm + Activation ----
         self.bn = _norm2d(out_channels)
-        self.act = nn.LeakyReLU(0.1, inplace=True)
+        self.act = nn.LeakyReLU(0.1)
 
         self._init_weights()
 
     def _init_weights(self):
         for m in [self.fc1, self.fc2]:
             if hasattr(m, 'weight'):
-                if BACKEND == "pytorch":
-                    nn.init.normal_(m.weight, 0, 0.01)
-                    nn.init.constant_(m.bias, 0)
+                normal_(m.weight, 0, 0.01)
+                constant_(m.bias, 0)
 
     def forward(self, x):
         """Forward pass.
@@ -120,33 +118,32 @@ class SDAConv(Module):
         # ---- 1. Coefficient prediction (Eq. 1) ----
         # M ∈ R^{B × num_kernels}
         pooled = self.gap(x).view(B, -1)
-        M = F.relu(self.fc1(pooled), inplace=False)
-        if BACKEND == "pytorch":
-            M = self.fc2(M)
-        else:
-            M = self.fc2(M)
+        M = relu(self.fc1(pooled))
+        M = self.fc2(M)
         M = nn.Softmax(dim=1)(M)  # (B, num_kernels)
 
         # ---- 2. Kernel generation (Eq. 2) ----
-        # Aggregate base conv weights: w_new = Σ m_i * w_i
-        # We execute each base conv and then combine the OUTPUTS
-        # (equivalent to combining weights when stride=1, same padding, no bias)
-        outputs = []
+        # Aggregate base conv outputs via iterative weighted sum:
+        #   F̂ = Σ m_i * out_i                                          (Eq. 3)
+        #
+        # We accumulate in-place instead of stacking to avoid holding
+        # num_kernels large intermediate tensors simultaneously.
+        F_hat = None
         for i, conv in enumerate(self.base_convs):
             out_i = conv(x)                          # (B, C_out, H, W)
-            outputs.append(out_i)
-
-        # Weighted sum  F̂ = Σ m_i * out_i  (Eq. 3)
-        # M[:, i] shape (B,) → add spatial dims for broadcasting
-        M_expanded = M.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-        # (B, num_kernels, 1, 1, 1) * stacked → (B, C_out, H, W)
-        stacked = torch.stack(outputs, dim=1) if BACKEND == "pytorch" else \
-                  jt.stack(outputs, dim=1)      # (B, num_kernels, C_out, H, W)
-        F_hat = (stacked * M_expanded).sum(dim=1)   # (B, C_out, H, W)
+            w = M[:, i].view(-1, 1, 1, 1)            # broadcast weight
+            if F_hat is None:
+                F_hat = out_i * w
+            else:
+                F_hat = F_hat + out_i * w
 
         # ---- 3. BatchNorm + Activation ----
         F_hat = self.bn(F_hat)
         return self.act(F_hat)
+
+    def execute(self, x):
+        """Jittor entry point — delegates to forward."""
+        return self.forward(x)
 
     def __repr__(self):
         return (f"SDAConv(in={self.in_channels}, out={self.out_channels}, "
@@ -168,7 +165,7 @@ class SDAConvBlock(Module):
         self.cbl1 = nn.Sequential(
             nn.Conv2d(in_channels, mid_channels, 1, bias=False),
             _norm2d(mid_channels),
-            nn.LeakyReLU(0.1, inplace=True),
+            nn.LeakyReLU(0.1),
         )
         self.sda = SDAConv(mid_channels, out_channels,
                            base_kernels=base_kernels, fc_ratio=fc_ratio)
@@ -187,6 +184,10 @@ class SDAConvBlock(Module):
         else:
             out = out + self.residual_proj(identity)
         return out
+
+    def execute(self, x):
+        """Jittor entry point — delegates to forward."""
+        return self.forward(x)
 
 
 class SpatiallySeparateSDA(Module):
@@ -223,10 +224,7 @@ class SpatiallySeparateSDA(Module):
         pad_h = (g - H % g) % g
         pad_w = (g - W % g) % g
         if pad_h or pad_w:
-            if BACKEND == "pytorch":
-                x = F.pad(x, (0, pad_w, 0, pad_h))
-            else:
-                x = F.pad(x, (0, pad_w, 0, pad_h))
+            x = pad(x, (0, pad_w, 0, pad_h))
 
         _, _, Hp, Wp = x.shape
         cell_h, cell_w = Hp // g, Wp // g
@@ -241,21 +239,18 @@ class SpatiallySeparateSDA(Module):
                 cells.append(cell)
 
         # Concatenate along channel dimension
-        if BACKEND == "pytorch":
-            # Reshape spatially: cells → rows → hstack → vstack
-            rows = []
-            for i in range(g):
-                row = torch.cat(cells[i * g:(i + 1) * g], dim=3)  # concat W
-                rows.append(row)
-            out = torch.cat(rows, dim=2)  # concat H
-        else:
-            rows = []
-            for i in range(g):
-                row = jt.cat(cells[i * g:(i + 1) * g], dim=3)
-                rows.append(row)
-            out = jt.cat(rows, dim=2)
+        # Reshape spatially: cells → rows → hstack → vstack
+        rows = []
+        for i in range(g):
+            row = cat(cells[i * g:(i + 1) * g], dim=3)  # concat W
+            rows.append(row)
+        out = cat(rows, dim=2)  # concat H
 
         # Crop back to original size
         if pad_h or pad_w:
             out = out[:, :, :H, :W]
         return out
+
+    def execute(self, x):
+        """Jittor entry point — delegates to forward."""
+        return self.forward(x)

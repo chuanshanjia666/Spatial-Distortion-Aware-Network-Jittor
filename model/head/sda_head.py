@@ -31,7 +31,7 @@ def _CBL(in_ch, out_ch, kernel_size=3, stride=1):
     return nn.Sequential(
         nn.Conv2d(in_ch, out_ch, kernel_size, stride, pad, bias=False),
         _norm2d(out_ch),
-        nn.LeakyReLU(0.1, inplace=True),
+        nn.LeakyReLU(0.1),
     )
 
 
@@ -70,7 +70,7 @@ class SDAHead(nn.Module):
 
         self.bn_act = nn.Sequential(
             _norm2d(in_channels),
-            nn.LeakyReLU(0.1, inplace=True),
+            nn.LeakyReLU(0.1),
         )
 
         self.pred_conv = nn.Conv2d(in_channels, out_channels, 1,
@@ -82,6 +82,10 @@ class SDAHead(nn.Module):
         x = self.sda_conv(x)
         x = self.bn_act(x)
         return self.pred_conv(x)
+
+    def execute(self, x):
+        """Jittor entry point — delegates to forward."""
+        return self.forward(x)
 
 
 class SDAHeadMulti(nn.Module):
@@ -102,6 +106,10 @@ class SDAHeadMulti(nn.Module):
     def forward(self, features):
         return [h(f) for h, f in zip(self.heads, features)]
 
+    def execute(self, features):
+        """Jittor entry point — delegates to forward."""
+        return self.forward(features)
+
 
 # Smoke test
 if __name__ == "__main__":
@@ -111,9 +119,16 @@ if __name__ == "__main__":
     if DEVICE == "cuda":
         head = head.cuda()
 
-    f8  = torch.randn(1, 128, 80, 80)
-    f16 = torch.randn(1, 128, 40, 40)
-    f32 = torch.randn(1, 128, 20, 20)
+    if BACKEND == "pytorch":
+        import torch
+        f8  = torch.randn(1, 128, 80, 80)
+        f16 = torch.randn(1, 128, 40, 40)
+        f32 = torch.randn(1, 128, 20, 20)
+    else:
+        import jittor as jt
+        f8  = jt.random([1, 128, 80, 80])
+        f16 = jt.random([1, 128, 40, 40])
+        f32 = jt.random([1, 128, 20, 20])
     if DEVICE == "cuda":
         f8, f16, f32 = f8.cuda(), f16.cuda(), f32.cuda()
 

@@ -3,14 +3,22 @@ Prediction decoder for SDANet — converts YOLO-style grid outputs to
 absolute oriented bounding boxes.
 
 Also includes dataset building and collation helpers.
+
+Supports both PyTorch and Jittor backends.
 """
 
 import numpy as np
-import torch
-import torch.nn.functional as F
+from config import (BACKEND, ANCHORS, STRIDES, BOX_FIELDS, INPUT_SIZE,
+                    DEVICE, LR, MIN_LR, WARMUP_ITERS)
 
-from config import ANCHORS, STRIDES, BOX_FIELDS, INPUT_SIZE
-
+if BACKEND == "pytorch":
+    import torch
+    import torch.nn.functional as F
+    import torch.utils.data as data
+else:
+    import jittor as jt
+    import jittor.nn as nn
+    import jittor.nn.functional as F
 
 # ===================================================================
 #  Prediction decoder
@@ -37,7 +45,11 @@ def decode_predictions(predictions, conf_thresh=0.3):
         for s_idx, (pred, stride) in enumerate(zip(predictions, STRIDES)):
             A = len(ANCHORS[s_idx])
             _, _, Hs, Ws = pred.shape
-            pred_np = pred[b].view(A, BOX_FIELDS, Hs, Ws).detach().cpu().numpy()
+
+            if BACKEND == "pytorch":
+                pred_np = pred[b].view(A, BOX_FIELDS, Hs, Ws).detach().cpu().numpy()
+            else:
+                pred_np = pred[b].view(A, BOX_FIELDS, Hs, Ws).numpy()
 
             for a in range(A):
                 aw, ah = ANCHORS[s_idx][a]
@@ -79,8 +91,7 @@ def decode_predictions(predictions, conf_thresh=0.3):
 #  Image / box resizing
 # ===================================================================
 
-def resize_image_and_boxes(image: torch.Tensor, boxes: torch.Tensor,
-                           target_size: int):
+def resize_image_and_boxes(image, boxes, target_size):
     """Resize image and scale boxes to ``target_size × target_size``.
 
     Args:
@@ -126,7 +137,11 @@ def collate_fn(batch):
         img, bxs = resize_image_and_boxes(img, bxs, INPUT_SIZE)
         resized_images.append(img)
         resized_boxes.append(bxs)
-    images = torch.stack(resized_images, dim=0)
+
+    if BACKEND == "pytorch":
+        images = torch.stack(resized_images, dim=0)
+    else:
+        images = jt.stack(resized_images, dim=0)
     return images, resized_boxes
 
 
@@ -134,7 +149,7 @@ def collate_fn(batch):
 #  Dataset building
 # ===================================================================
 
-def build_datasets(train_specs: list[str], val_specs: list[str]):
+def build_datasets(train_specs, val_specs):
     """Build training and validation ConcatDatasets from spec lists.
 
     Args:
@@ -144,7 +159,6 @@ def build_datasets(train_specs: list[str], val_specs: list[str]):
     Returns:
         (train_dataset, val_dataset) — either may be None.
     """
-    from torch.utils.data import ConcatDataset
     from datasets import get_dataset
 
     train_ds = []
@@ -164,16 +178,46 @@ def build_datasets(train_specs: list[str], val_specs: list[str]):
         except FileNotFoundError:
             print(f"  val:   {spec} → SKIP (no file)")
 
-    train = ConcatDataset(train_ds) if train_ds else None
-    val = ConcatDataset(val_ds) if val_ds else None
+    if BACKEND == "pytorch":
+        from torch.utils.data import ConcatDataset
+        train = ConcatDataset(train_ds) if train_ds else None
+        val = ConcatDataset(val_ds) if val_ds else None
+    else:
+        # Jittor equivalent: simple concat via ConcatDataset
+        train = _JittorConcatDataset(train_ds) if train_ds else None
+        val = _JittorConcatDataset(val_ds) if val_ds else None
     return train, val
+
+
+class _JittorConcatDataset:
+    """Minimal ConcatDataset for Jittor (iterates all sub-datasets)."""
+
+    def __init__(self, datasets):
+        self.datasets = datasets
+        self._lengths = [len(d) for d in datasets]
+        self._cumsum = [0]
+        for l in self._lengths:
+            self._cumsum.append(self._cumsum[-1] + l)
+        self.total = self._cumsum[-1]
+
+    def __len__(self):
+        return self.total
+
+    def __getitem__(self, idx):
+        ds_idx = 0
+        for cs, cl in zip(self._cumsum[:-1], self._cumsum[1:]):
+            if cs <= idx < cl:
+                break
+            ds_idx += 1
+        local_idx = idx - self._cumsum[ds_idx]
+        return self.datasets[ds_idx][local_idx]
 
 
 # ===================================================================
 #  Model building
 # ===================================================================
 
-def build_model(num_classes: int):
+def build_model(num_classes):
     """Build SDANet model and move to device.
 
     Args:
@@ -182,19 +226,26 @@ def build_model(num_classes: int):
     Returns:
         SDANet model instance.
     """
-    from config import (DEVICE, SDA_BASE_KERNELS, SSS_ENABLED,
-                        DARKNET53_PRETRAINED, LOAD_FROM_PRETRAIN)
     from model import SDANet
 
     model = SDANet(
         num_classes=num_classes,
-        base_kernels=SDA_BASE_KERNELS,
-        sss_enabled=SSS_ENABLED,
-        pretrained=DARKNET53_PRETRAINED if LOAD_FROM_PRETRAIN else None,
     )
     if DEVICE == "cuda":
         model = model.cuda()
     return model
+
+
+def build_optimizer(model):
+    """Build optimizer for the model.
+
+    Returns:
+        Optimizer instance (PyTorch or Jittor).
+    """
+    if BACKEND == "pytorch":
+        return torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-4)
+    else:
+        return jt.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-4)
 
 
 # ===================================================================
@@ -205,17 +256,46 @@ def warmup_lr(optimizer, warmup_iters: int, current_iter: int):
     """Linear LR warmup.
 
     Args:
-        optimizer:     PyTorch optimizer.
+        optimizer:     PyTorch or Jittor optimizer.
         warmup_iters:  Number of warmup iterations.
         current_iter:  Current global step (1-indexed).
     """
-    from config import LR
-
     if current_iter >= warmup_iters:
         return
     lr = LR * (current_iter / warmup_iters)
     for pg in optimizer.param_groups:
         pg['lr'] = lr
+
+
+def build_lr_scheduler(optimizer, max_iters: int):
+    """Build LR scheduler (cosine annealing after warmup).
+
+    For PyTorch: returns a manual step function; call step_lr() each iter.
+    For Jittor:  returns a jt.nn.lr_scheduler attached to the optimizer.
+
+    Args:
+        optimizer: PyTorch or Jittor optimizer.
+        max_iters:  Total training iterations.
+
+    Returns:
+        A scheduler object with a step(current_iter) method.
+    """
+    if BACKEND == "pytorch":
+        return _PyTorchScheduler(optimizer, max_iters)
+    else:
+        # Jittor: use CosineAnnealingLR with warmup-like step
+        return _JittorScheduler(optimizer, max_iters)
+
+
+class _PyTorchScheduler:
+    def __init__(self, optimizer, max_iters):
+        self.optimizer = optimizer
+        self.max_iters = max_iters
+        self._step = 0
+
+    def step(self, current_iter: int):
+        warmup_lr(self.optimizer, WARMUP_ITERS, current_iter)
+        cosine_annealing_lr(self.optimizer, self.max_iters, current_iter)
 
 
 def cosine_annealing_lr(optimizer, max_iters: int, current_iter: int):
@@ -226,8 +306,6 @@ def cosine_annealing_lr(optimizer, max_iters: int, current_iter: int):
         max_iters:     Total training iterations.
         current_iter:  Current global step (1-indexed).
     """
-    from config import LR, MIN_LR, WARMUP_ITERS
-
     if current_iter < WARMUP_ITERS:
         return  # warmup handles this phase
 
@@ -235,3 +313,39 @@ def cosine_annealing_lr(optimizer, max_iters: int, current_iter: int):
     lr = MIN_LR + 0.5 * (LR - MIN_LR) * (1.0 + np.cos(np.pi * progress))
     for pg in optimizer.param_groups:
         pg['lr'] = lr
+
+
+class _JittorScheduler:
+    """Jittor-compatible LR scheduler wrapping cosine annealing."""
+
+    def __init__(self, optimizer, max_iters):
+        self.optimizer = optimizer
+        self.max_iters = max_iters
+        self.current_iter = 0
+
+    def step(self, current_iter: int = None):
+        if current_iter is not None:
+            self.current_iter = current_iter
+        else:
+            self.current_iter += 1
+
+        warmup_lr(self.optimizer, WARMUP_ITERS, self.current_iter)
+        if self.current_iter >= WARMUP_ITERS:
+            progress = (self.current_iter - WARMUP_ITERS) / max(
+                1, self.max_iters - WARMUP_ITERS)
+            lr = MIN_LR + 0.5 * (LR - MIN_LR) * (
+                1.0 + np.cos(np.pi * progress))
+            for pg in self.optimizer.param_groups:
+                pg['lr'] = lr
+
+
+# ===================================================================
+#  Compatibility shims (use model output tensors, not these directly)
+# ===================================================================
+
+# Expose tensor library alias so other modules can import from here
+# instead of branching on BACKEND everywhere.
+if BACKEND == "pytorch":
+    __all__ = ['torch', 'nn', 'F']
+else:
+    __all__ = ['jt', 'nn', 'F']

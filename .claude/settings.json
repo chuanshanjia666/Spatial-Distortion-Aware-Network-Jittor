@@ -25,7 +25,9 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:www.youtube.com)",
       "Bash(pdftotext \"/home/chuanshanjia/论文/Towards_Better_Distortion_Feature_Learning_for_Object_Detection_in_Top-View_Fisheye_Cameras.pdf\" /tmp/fisheye_paper.txt)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(unzip -l /home/chuanshanjia/GitHubRepository/Spatial-Distortion-Aware-Network-Jittor/datasets/zip/WEPDTOF.zip)",
+      "Bash(unzip -l /home/chuanshanjia/GitHubRepository/Spatial-Distortion-Aware-Network-Jittor/datasets/zip/HABBOF.zip)"
     ]
   },
   "hooks": {

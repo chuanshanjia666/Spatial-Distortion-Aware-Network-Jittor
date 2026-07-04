@@ -7,7 +7,8 @@ All hyperparameters for the Spatial-Distortion-Aware Network.
 # ---------------------------------------------------------------------------
 # Backend & device
 # ---------------------------------------------------------------------------
-BACKEND = "pytorch"       # "pytorch" | "jittor"
+# BACKEND = "pytorch"       # "pytorch" | "jittor"
+BACKEND = "jittor"
 DEVICE = "cuda" if BACKEND == "pytorch" else "cuda"
 
 # ---------------------------------------------------------------------------
@@ -52,7 +53,7 @@ INPUT_SIZE = 640            # input image size (square: 640×640)
 # Gradient accumulation: when enabled, use smaller per-step batches
 # and replace BatchNorm with GroupNorm (BN is unstable with small micro-batches).
 USE_ACCUMULATION_STEP = True
-STEP_BATCH_SIZE = 4 if USE_ACCUMULATION_STEP else BATCH_SIZE
+STEP_BATCH_SIZE = 8 if USE_ACCUMULATION_STEP else BATCH_SIZE
 GN_NUM_GROUPS = 32          # GroupNorm groups (auto-clamped to divisor of channels)
 
 LOAD_FROM_PRETRAIN = True

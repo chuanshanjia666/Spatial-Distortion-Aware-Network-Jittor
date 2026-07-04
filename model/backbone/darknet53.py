@@ -19,6 +19,8 @@ if BACKEND == "pytorch":
 else:
     import jittor.nn as nn
 
+from model.op.functional import constant_, normal_, kaiming_normal_
+
 
 # ------------------------------------------------------------------
 #  Norm helper
@@ -43,7 +45,7 @@ def _CBL(in_ch, out_ch, kernel_size=3, stride=1, **kwargs):
     return nn.Sequential(
         nn.Conv2d(in_ch, out_ch, kernel_size, stride, pad, bias=False, **kwargs),
         _norm2d(out_ch),
-        nn.LeakyReLU(0.1, inplace=True),
+        nn.LeakyReLU(0.1),
     )
 
 
@@ -58,6 +60,10 @@ class ResBlock(nn.Module):
 
     def forward(self, x):
         return x + self.cbl2(self.cbl1(x))
+
+    def execute(self, x):
+        """Jittor entry point — delegates to forward."""
+        return self.forward(x)
 
 
 # ------------------------------------------------------------------
@@ -92,7 +98,7 @@ class DarkNet53(nn.Module):
         self.stem = nn.Sequential(
             nn.Conv2d(3, filters[0], 3, stride=1, padding=1, bias=False),
             _norm2d(filters[0]),
-            nn.LeakyReLU(0.1, inplace=True),
+            nn.LeakyReLU(0.1),
         )
 
         # Stages
@@ -114,18 +120,16 @@ class DarkNet53(nn.Module):
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                if BACKEND == "pytorch":
-                    import torch.nn.init as init
-                    init.kaiming_normal_(m.weight, mode='fan_out',
-                                         nonlinearity='leaky_relu')
+                kaiming_normal_(m.weight, mode='fan_out',
+                                nonlinearity='leaky_relu')
                 if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
+                    constant_(m.bias, 0)
             elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
+                constant_(m.weight, 1)
+                constant_(m.bias, 0)
             elif isinstance(m, nn.GroupNorm):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
+                constant_(m.weight, 1)
+                constant_(m.bias, 0)
 
     def forward(self, x):
         """Returns list of feature maps at each ``out_indices`` stage."""
@@ -137,16 +141,27 @@ class DarkNet53(nn.Module):
                 outs.append(x)
         return outs
 
+    def execute(self, x):
+        """Jittor entry point — delegates to forward."""
+        return self.forward(x)
+
 
 # Smoke test
 if __name__ == "__main__":
     from config import DEVICE, INPUT_SIZE
-    import torch
+
+    if BACKEND == "pytorch":
+        import torch
 
     model = DarkNet53()
     if DEVICE == "cuda":
         model = model.cuda()
-    x = torch.randn(2, 3, INPUT_SIZE, INPUT_SIZE)
+
+    if BACKEND == "pytorch":
+        x = torch.randn(2, 3, INPUT_SIZE, INPUT_SIZE)
+    else:
+        import jittor as jt
+        x = jt.random([2, 3, INPUT_SIZE, INPUT_SIZE])
     if DEVICE == "cuda":
         x = x.cuda()
     outs = model(x)

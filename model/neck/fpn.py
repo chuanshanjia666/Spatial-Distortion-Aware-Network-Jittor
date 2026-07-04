@@ -21,6 +21,7 @@ else:
     import jittor.nn as nn
 
 from model.op.sdaconv import SDAConv, _norm2d
+from model.op.functional import interpolate
 
 
 def _CBL(in_ch, out_ch, kernel_size=3, stride=1):
@@ -29,7 +30,7 @@ def _CBL(in_ch, out_ch, kernel_size=3, stride=1):
     return nn.Sequential(
         nn.Conv2d(in_ch, out_ch, kernel_size, stride, pad, bias=False),
         _norm2d(out_ch),
-        nn.LeakyReLU(0.1, inplace=True),
+        nn.LeakyReLU(0.1),
     )
 
 
@@ -86,11 +87,7 @@ class FPNNeck(nn.Module):
         laterals = [l(f) for l, f in zip(self.laterals, features)]
 
         for i in range(self.num_scales - 1, 0, -1):
-            if BACKEND == "pytorch":
-                import torch.nn.functional as F
-                up = F.interpolate(laterals[i], scale_factor=2, mode='nearest')
-            else:
-                up = nn.interpolate(laterals[i], scale_factor=2, mode='nearest')
+            up = interpolate(laterals[i], scale_factor=2, mode='nearest')
             laterals[i - 1] = laterals[i - 1] + up
 
         for i in range(self.num_scales - 1):
@@ -99,19 +96,31 @@ class FPNNeck(nn.Module):
         outs = [sda(l) for sda, l in zip(self.sda_convs, laterals)]
         return outs
 
+    def execute(self, features):
+        """Jittor entry point — delegates to forward."""
+        return self.forward(features)
+
 
 # Smoke test
 if __name__ == "__main__":
-    import torch
     from config import DEVICE
+
+    if BACKEND == "pytorch":
+        import torch
 
     neck = FPNNeck(in_channels=[256, 512, 1024], out_channels=128)
     if DEVICE == "cuda":
         neck = neck.cuda()
 
-    f8  = torch.randn(1, 256, 80, 80)
-    f16 = torch.randn(1, 512, 40, 40)
-    f32 = torch.randn(1, 1024, 20, 20)
+    if BACKEND == "pytorch":
+        f8  = torch.randn(1, 256, 80, 80)
+        f16 = torch.randn(1, 512, 40, 40)
+        f32 = torch.randn(1, 1024, 20, 20)
+    else:
+        import jittor as jt
+        f8  = jt.random([1, 256, 80, 80])
+        f16 = jt.random([1, 512, 40, 40])
+        f32 = jt.random([1, 1024, 20, 20])
     if DEVICE == "cuda":
         f8, f16, f32 = f8.cuda(), f16.cuda(), f32.cuda()
 
