@@ -10,8 +10,10 @@ Loss = box_loss (MSE on tx,ty,tw,th,tR) + obj_loss (BCE).
 Supports both PyTorch and Jittor backends.
 """
 
-from config import BACKEND, BOX_FIELDS, BOX_LOSS_WEIGHT, CLS_LOSS_WEIGHT,
-                    OBJ_LOSS_WEIGHT, STRIDES
+from config import (
+    BACKEND, BOX_FIELDS, BOX_LOSS_WEIGHT, CLS_LOSS_WEIGHT,
+    OBJ_LOSS_WEIGHT, STRIDES
+)
 
 if BACKEND == "pytorch":
     import torch

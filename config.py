@@ -8,7 +8,7 @@ All hyperparameters for the Spatial-Distortion-Aware Network.
 # Backend & device
 # ---------------------------------------------------------------------------
 # BACKEND = "pytorch"       # "pytorch" | "jittor"
-BACKEND = "jittor"
+BACKEND = "pytorch"
 DEVICE = "cuda" if BACKEND == "pytorch" else "cuda"
 
 # ---------------------------------------------------------------------------
