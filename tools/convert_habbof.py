@@ -28,7 +28,7 @@ from PIL import Image
 
 
 SUBDIRS = ["Lab1", "Lab2", "Meeting1", "Meeting2"]
-CATEGORIES = [{"id": 1, "name": "person"}]
+CATEGORIES = [{"id": 1, "name": "person", "supercategory": "person"}]
 
 
 def convert_one_subdir(root: str, subdir: str, out_dir: str, start_img_id: int, start_ann_id: int):
@@ -81,6 +81,7 @@ def convert_one_subdir(root: str, subdir: str, out_dir: str, start_img_id: int, 
                     "bbox": [cx, cy, w, h, R],
                     "area": w * h,
                     "iscrowd": 0,
+                    "segmentation": [],
                 })
                 ann_id += 1
 

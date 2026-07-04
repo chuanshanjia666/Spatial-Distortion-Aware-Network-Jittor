@@ -44,11 +44,11 @@ import argparse
 
 
 CATEGORIES = [
-    {"id": 1, "name": "Bike"},
-    {"id": 2, "name": "Bus"},
-    {"id": 3, "name": "Car"},
-    {"id": 4, "name": "Pedestrian"},
-    {"id": 5, "name": "Truck"},
+    {"id": 1, "name": "Bike", "supercategory": "vehicle"},
+    {"id": 2, "name": "Bus", "supercategory": "vehicle"},
+    {"id": 3, "name": "Car", "supercategory": "vehicle"},
+    {"id": 4, "name": "Pedestrian", "supercategory": "person"},
+    {"id": 5, "name": "Truck", "supercategory": "vehicle"},
 ]
 NAME_TO_ID = {c["name"]: c["id"] for c in CATEGORIES}
 
@@ -127,6 +127,7 @@ def main():
                     "bbox": [round(cx, 4), round(cy, 4), round(w, 4), round(h, 4), 0.0],
                     "area": round(w * h, 4),
                     "iscrowd": 0,
+                    "segmentation": [],
                 })
                 ann_id_counter += 1
 

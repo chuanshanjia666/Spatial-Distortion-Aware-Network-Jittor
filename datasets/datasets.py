@@ -17,8 +17,8 @@ To convert raw datasets to this format, use:
     python tools/convert_habbof.py
     python tools/convert_fisheye8k.py
 
-To apply PFDAug distortion augmentation, use:
-    python tools/pfdaug.py
+PFDAug is applied online (in ``__getitem__``) when the config enables it
+and the dataset is in training mode.  See ``config.PFDAUG_ENABLED``.
 
 Returns (image, boxes, labels) where:
   - image:  (C, H, W) float32 tensor, normalized to [0, 1]
@@ -33,7 +33,8 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from config import BACKEND
+from config import BACKEND, PFDAUG_ENABLED, PFDAUG_K, PFDAUG_P
+from datasets.pfdaug import PFDAug
 
 # ---------------------------------------------------------------------------
 # Backend-agnostic helpers
@@ -86,31 +87,46 @@ def _pil_to_float_tensor(pil_img):
 class FisheyeDataset(Dataset):
     """COCO-style rotated-bbox dataset for fisheye images.
 
-    Pure data loader — no augmentation.  Use ``tools/pfdaug.py`` to
-    generate augmented datasets offline::
+    PFDAug is applied online in ``__getitem__`` when ``split="train"``.
+    ``split="val"`` and ``split="test"`` always use raw images.
 
-        python tools/pfdaug.py --ann datasets/HABBOF/annotations/all.json \\
-                               --out datasets/HABBOF_PFDAug --k 0.5
+    The three splits are read from separate annotation files underneath
+    the same annotations directory::
+
+        annotations/
+          train.json
+          val.json
+          test.json
+
+    Use ``tools/split_train_val.py`` to generate them from all.json.
 
     Args:
-        ann_file:  Path to the COCO-style JSON annotation file.
-        root_dir:  Root directory where ``file_name`` paths are relative to.
-                   Auto-detected if ``None``.
-        transform: Optional callable applied to PIL image before tensor conversion.
+        name:     Dataset preset name (see ``DATASET_PRESETS``) or direct
+                  path to a COCO JSON.  When using splits, pass the preset
+                  name and the split is appended automatically.
+        split:    ``"train"`` | ``"val"`` | ``"test"``.
+        root_dir: Override root directory. Auto-detected if ``None``.
+        transform: Optional callable applied to PIL image before tensor.
+        seed:     Random seed for reproducibility.
     """
 
-    def __init__(self, ann_file, root_dir=None, transform=None):
+    def __init__(self, name="habbof", split="train", root_dir=None,
+                 transform=None, seed=42):
         super().__init__()
+
+        # Resolve annotation file
+        ann_file = _resolve_ann(name, split)
+
         with open(ann_file) as f:
             coco = json.load(f)
 
-        # If annotations live in e.g. HABBOF/annotations/, root is HABBOF/
         ann_dir = os.path.dirname(os.path.abspath(ann_file))
         if os.path.basename(ann_dir) == "annotations":
             self.root_dir = root_dir or os.path.dirname(ann_dir)
         else:
             self.root_dir = root_dir or ann_dir
         self.transform = transform
+        self.split = split
 
         # Index
         self._images = {img["id"]: img for img in coco["images"]}
@@ -127,6 +143,12 @@ class FisheyeDataset(Dataset):
         ]
 
         assert len(self._entries) > 0, f"No valid entries in {ann_file}"
+
+        # PFDAug — online, training only, controlled by config
+        if PFDAUG_ENABLED and split == "train":
+            self.pfdaug = PFDAug(k=PFDAUG_K, p=PFDAUG_P, seed=seed)
+        else:
+            self.pfdaug = None
 
     # ------------------------------------------------------------------
     #  Properties
@@ -170,6 +192,14 @@ class FisheyeDataset(Dataset):
         if self.transform is not None:
             image = self.transform(image)
 
+        # ---- Online PFDAug (train only, numpy → numpy) ----
+        if self.pfdaug is not None and len(boxes) > 0:
+            image_np = np.array(image)
+            boxes_np = np.array(boxes, dtype=np.float32)
+            image_np, boxes_np = self.pfdaug(image_np, boxes_np)
+            image = Image.fromarray(image_np)
+            boxes = boxes_np.tolist()
+
         boxes_arr = (
             np.array(boxes, dtype=np.float32) if boxes
             else np.empty((0, 5), dtype=np.float32)
@@ -186,53 +216,128 @@ class FisheyeDataset(Dataset):
         return to_container(img_tensor, boxes_tensor, labels_tensor)
 
     def __repr__(self):
-        return f"{self.__class__.__name__}(n={len(self)}, classes={len(self._cats)})"
+        s = f"{self.__class__.__name__}(n={len(self)}, split={self.split}, "
+        s += f"classes={len(self._cats)})"
+        if self.pfdaug is not None:
+            s += f" +PFDAug(k={self.pfdaug.k}, p={self.pfdaug.p})"
+        return s
+
+
+# ===================================================================
+#  Presets & resolution
+# ===================================================================
+
+# Each preset points to an *annotations directory*.  The actual annotation
+# file is ``{preset_path}/{split}.json``.
+DATASET_PRESETS = {
+    "habbof":     "datasets/HABBOF/annotations",
+    "fisheye8k":  "datasets/FishEye8k/annotations",
+    "cepdof":     "datasets/CEPDOF/annotations",
+    "wepdtof":    "datasets/WEPDTOF/annotations",
+}
+
+# Presets for single-file datasets (no split → one file per scene).
+# These are passed as ann_file directly.
+SINGLE_FILE_PRESETS = {
+    "habbof-all":     "datasets/HABBOF/annotations/all.json",
+    "habbof-train":   "datasets/HABBOF/annotations/train.json",
+    "habbof-val":     "datasets/HABBOF/annotations/val.json",
+    "habbof-test":    "datasets/HABBOF/annotations/test.json",
+    "fisheye8k-all":  "datasets/FishEye8k/annotations/all.json",
+    "fisheye8k-train":"datasets/FishEye8k/annotations/train.json",
+    # "fisheye8k-val":  "datasets/FishEye8k/annotations/val.json",
+    "fisheye8k-test": "datasets/FishEye8k/annotations/test.json",
+    "cepdof-all":     "datasets/CEPDOF/annotations/all.json",
+    "cepdof-train":   "datasets/CEPDOF/annotations/train.json",
+    "cepdof-val":     "datasets/CEPDOF/annotations/val.json",
+    "cepdof-test":    "datasets/CEPDOF/annotations/test.json",
+    "wepdtof-all":    "datasets/WEPDTOF/annotations/all.json",
+    "wepdtof-train":  "datasets/WEPDTOF/annotations/train.json",
+    "wepdtof-val":    "datasets/WEPDTOF/annotations/val.json",
+    "wepdtof-test":   "datasets/WEPDTOF/annotations/test.json",
+}
+
+
+def _resolve_ann(name: str, split: str) -> str:
+    """Resolve a preset name + split to an annotation file path.
+
+    1. If ``name`` is a path to an existing file, return it directly.
+    2. Try ``SINGLE_FILE_PRESETS[name-split]`` (e.g. "habbof-all").
+    3. Try ``name/split.json`` (e.g. if name is a directory path).
+    4. Try ``<preset_dir>/split.json`` (e.g. if name is a DATASET_PRESETS key).
+    """
+    # Direct file path
+    if name.endswith(".json") and os.path.isfile(name):
+        return name
+
+    # Single-file preset: "habbof-all", "wepdtof-test", etc.
+    combo = f"{name}-{split}"
+    if combo in SINGLE_FILE_PRESETS:
+        return SINGLE_FILE_PRESETS[combo]
+
+    # Directory preset → <dir>/<split>.json
+    if name in DATASET_PRESETS:
+        ann_dir = DATASET_PRESETS[name]
+    else:
+        # Last resort: treat name as a directory path
+        ann_dir = name
+
+    ann_file = os.path.join(ann_dir, f"{split}.json")
+    if os.path.isfile(ann_file):
+        return ann_file
+
+    raise FileNotFoundError(
+        f"Cannot resolve dataset '{name}' split '{split}': "
+        f"{ann_file} not found.  Run tools/split_train_val.py first."
+    )
+
+
+def _parse_ds_spec(spec: str):
+    """Parse a ``preset[split]`` spec, e.g. ``"habbof[all]"`` → ("habbof", "all").
+
+    If no brackets, defaults split to ``"all"``.  Plain file paths are returned as-is
+    with split ``"all"``.
+    """
+    spec = spec.strip()
+    if "[" in spec and spec.endswith("]"):
+        pos = spec.index("[")
+        name = spec[:pos]
+        split = spec[pos + 1:-1]
+        return name, split
+    return spec, "all"
 
 
 # ===================================================================
 #  Factory
 # ===================================================================
 
-DATASET_PRESETS = {
-    "habbof":     "datasets/HABBOF/annotations/all.json",
-    "habbof-lab1": "datasets/HABBOF/annotations/Lab1.json",
-    "habbof-lab2": "datasets/HABBOF/annotations/Lab2.json",
-    "habbof-meeting1": "datasets/HABBOF/annotations/Meeting1.json",
-    "habbof-meeting2": "datasets/HABBOF/annotations/Meeting2.json",
-    "fisheye8k":  "datasets/FishEye8k/annotations/all.json",
-    "fisheye8k-train": "datasets/FishEye8k/annotations/train.json",
-    "fisheye8k-test":  "datasets/FishEye8k/annotations/test.json",
-    "cepdof":     "",
-}
-
-
-def get_dataset(name, ann_file=None, root_dir=None, transform=None, **kwargs):
-    """Create a :class:`FisheyeDataset` by name or annotation file.
+def get_dataset(spec="habbof[all]", root_dir=None, transform=None, seed=42):
+    """Create a :class:`FisheyeDataset` from a ``preset[split]`` spec.
 
     Args:
-        name:    Dataset key (see ``DATASET_PRESETS``) or path to a COCO JSON.
-        ann_file: Override annotation file path.
-        root_dir: Override root directory. Auto-detected if ``None``.
+        spec:      Dataset spec like ``"habbof[all]"``, ``"cepdof[train]"``,
+                   or a plain path to a COCO JSON.
+        root_dir:  Override root directory. Auto-detected if ``None``.
         transform: Optional PIL→PIL transform.
-        **kwargs:  Forwarded for backward compatibility (ignored).
+        seed:      RNG seed.
 
     Returns:
         FisheyeDataset instance.
+
+    Examples::
+
+        ds = get_dataset("habbof[all]")
+        ds = get_dataset("cepdof[train]")
+        ds = get_dataset("wepdtof[test]")
+        ds = get_dataset("datasets/HABBOF/annotations/all.json")
     """
-    if ann_file is None:
-        if name in DATASET_PRESETS:
-            ann_file = DATASET_PRESETS[name]
-        elif os.path.isfile(name):
-            ann_file = name
-
-    assert ann_file and os.path.isfile(ann_file), (
-        f"Unknown dataset '{name}'. Options: {list(DATASET_PRESETS.keys())}"
-    )
-
+    name, split = _parse_ds_spec(spec)
     return FisheyeDataset(
-        ann_file=ann_file,
+        name=name,
+        split=split,
         root_dir=root_dir,
         transform=transform,
+        seed=seed,
     )
 
 
@@ -242,17 +347,21 @@ def get_dataset(name, ann_file=None, root_dir=None, transform=None, **kwargs):
 
 if __name__ == "__main__":
     print(f"Backend: {BACKEND}")
-    for name in ["habbof", "fisheye8k", "cepdof"]:
+    print(f"PFDAug: enabled={PFDAUG_ENABLED}, k={PFDAUG_K}, p={PFDAUG_P}\n")
+
+    specs = [
+        ("habbof[all]",    "train"),
+        # ("fisheye8k[all]", "val"),
+        ("cepdof[all]",    "val"),
+        ("wepdtof[all]",   "val"),
+    ]
+    for spec, split_override in specs:
         try:
-            if name == "cepdof":
-                ann = "datasets/CEPDOF/annotations/All_off.json"
-            else:
-                ann = DATASET_PRESETS[name]
-            ds = FisheyeDataset(ann)
-            print(f"\n{ds}")
+            ds = get_dataset(spec)
+            print(f"  {spec}: {ds}")
             img, boxes, labels = ds[0]
-            print(f"  image:  {type(img).__name__} shape={img.shape}")
-            print(f"  boxes:  {type(boxes).__name__} shape={boxes.shape}")
-            print(f"  labels: {type(labels).__name__} shape={labels.shape}")
+        except FileNotFoundError:
+            print(f"  {spec}: SKIP (no file)")
         except Exception as e:
-            print(f"\n{name}: SKIPPED — {e}")
+            print(f"  {spec}: ERROR — {e}")
+        print()

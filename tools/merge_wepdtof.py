@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
-Merge all CEPDOF scene COCO JSONs into a single ``all.json``.
+Merge all WEPDTOF scene COCO JSONs into a single ``all.json``.
 
 Usage:
-    python tools/merge_cepdof.py --ann-dir datasets/CEPDOF/annotations
+    python tools/merge_wepdtof.py --ann-dir datasets/WEPDTOF/annotations
 """
 
 import os
-import sys
 import json
 import argparse
-
+import sys
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Merge CEPDOF scene JSONs into all.json")
-    parser.add_argument("--ann-dir", default="datasets/CEPDOF/annotations")
+        description="Merge WEPDTOF scene JSONs into all.json")
+    parser.add_argument("--ann-dir", default="datasets/WEPDTOF/annotations")
     args = parser.parse_args()
 
     ann_dir = args.ann_dir
@@ -36,6 +35,7 @@ def main():
     ann_id_counter = 1
 
     for fname in json_files:
+        scene_name = os.path.splitext(fname)[0]
         path = os.path.join(ann_dir, fname)
         with open(path) as fh:
             data = json.load(fh)
@@ -50,7 +50,8 @@ def main():
 
             merged["images"].append({
                 "id": new_id,
-                "file_name": img.get("file_name", f"{old_id}.jpg"),
+                "file_name": os.path.join("frames", scene_name,
+                                          img.get("file_name", f"{old_id}.jpg")),
                 "width": img.get("width", 0),
                 "height": img.get("height", 0),
             })

@@ -14,7 +14,34 @@ DEVICE = "cuda" if BACKEND == "pytorch" else "cuda"
 # Dataset
 # ---------------------------------------------------------------------------
 NUM_WORKERS = 4
-NUM_CLASSES = 1            # person (most fisheye datasets are person-only)
+
+# Dataset configuration: each entry uses ``preset[split]`` syntax.
+#   preset   → one of habbof, cepdof, wepdtof, fisheye8k (see DATASET_PRESETS)
+#   split    → "all", "train", "val", or "test" (maps to annotations/<split>.json)
+#
+# PFDAug is applied to TRAIN_DATASETS only; val/test datasets always use raw images.
+#
+# Examples:
+#   TRAIN_DATASETS = ["habbof[all]"]                          # habbof all→train, aug on
+#   VAL_DATASETS   = ["cepdof[all]"]                          # cepdof all→val,   aug off
+#   TEST_DATASETS  = ["wepdtof[test]"]                        # wepdtof test→test, aug off
+#
+#   # Multi-dataset training with different val splits:
+#   TRAIN_DATASETS = ["habbof[train]", "cepdof[train]"]
+#   VAL_DATASETS   = ["habbof[val]",   "cepdof[val]"]
+#   TEST_DATASETS  = ["wepdtof[test]", "fisheye8k[test]"]
+
+TRAIN_DATASETS = ["habbof[all]","wepdtof[all]",]
+VAL_DATASETS   = ["wepdtof[all]"]
+TEST_DATASETS  = []                       # empty → skip test evaluation
+
+# ---------------------------------------------------------------------------
+# PFDAug — online distortion augmentation (paper Section IV)
+# ---------------------------------------------------------------------------
+# Applied only to training split; val/test use raw images.
+PFDAUG_ENABLED = True
+PFDAUG_K = 0.5             # distortion coefficient (paper default 0.5)
+PFDAUG_P = 0.5             # probability per sample
 
 # ---------------------------------------------------------------------------
 # Training
@@ -25,7 +52,7 @@ INPUT_SIZE = 640            # input image size (square: 640×640)
 # Gradient accumulation: when enabled, use smaller per-step batches
 # and replace BatchNorm with GroupNorm (BN is unstable with small micro-batches).
 USE_ACCUMULATION_STEP = True
-STEP_BATCH_SIZE = 32 if USE_ACCUMULATION_STEP else BATCH_SIZE
+STEP_BATCH_SIZE = 4 if USE_ACCUMULATION_STEP else BATCH_SIZE
 GN_NUM_GROUPS = 32          # GroupNorm groups (auto-clamped to divisor of channels)
 
 LOAD_FROM_PRETRAIN = True
@@ -35,6 +62,13 @@ MOMENTUM = 0.9
 WEIGHT_DECAY = 0.0001
 MAX_ITER = 6000             # fine-tuning iterations on fisheye datasets
 WARMUP_ITERS = 1000
+EPOCHS = 50                 # number of training epochs
+RESUME = None               # path to checkpoint for resuming (None = train from scratch)
+OUTPUT_DIR = "checkpoints"   # directory for saving checkpoints
+
+# Cosine annealing LR scheduler
+USE_COSINE_SCHEDULER = True  # if True, cosine anneal from LR to MIN_LR over MAX_ITER
+MIN_LR = 1e-6                # minimum LR for cosine annealing
 
 # ---------------------------------------------------------------------------
 # Model architecture (SDANet)
@@ -76,7 +110,6 @@ NUM_ANCHORS = 3             # anchors per scale, same as YOLOv3
 BOX_FIELDS = 6              # cx, cy, w, h, θ, confidence
 
 # Anchors (same as YOLOv3, pre-scaled)
-# Will be auto-computed from dataset if not specified
 ANCHORS = [
     [(10, 13), (16, 30), (33, 23)],     # small  scale (stride 8)
     [(30, 61), (62, 45), (59, 119)],    # medium scale (stride 16)

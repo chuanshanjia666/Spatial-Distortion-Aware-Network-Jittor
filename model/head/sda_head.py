@@ -13,7 +13,7 @@ BatchNorm so that small micro-batches remain stable.
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import (BACKEND, SDA_BASE_KERNELS, NECK_OUT_CHANNELS,
-                    NUM_ANCHORS, NUM_CLASSES, BOX_FIELDS, SSS_ENABLED, SSS_GRID)
+                    NUM_ANCHORS, BOX_FIELDS, SSS_ENABLED, SSS_GRID)
 
 if BACKEND == "pytorch":
     import torch

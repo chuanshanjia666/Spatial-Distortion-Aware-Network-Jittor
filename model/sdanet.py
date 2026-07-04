@@ -36,7 +36,7 @@ Supports both PyTorch and Jittor backends.
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (BACKEND, SDA_BASE_KERNELS, NECK_OUT_CHANNELS,
-                    NUM_ANCHORS, NUM_CLASSES, SSS_ENABLED, SSS_GRID,
+                    NUM_ANCHORS, SSS_ENABLED, SSS_GRID,
                     DARKNET53_PRETRAINED, INPUT_SIZE)
 
 if BACKEND == "pytorch":
@@ -64,7 +64,7 @@ class SDANet(nn.Module):
     def __init__(self, num_classes=None, base_kernels=None,
                  sss_enabled=None, sss_grid=None, pretrained=None):
         super().__init__()
-        num_classes = num_classes or NUM_CLASSES
+        num_classes = num_classes or 1
         base_kernels = base_kernels or SDA_BASE_KERNELS
         sss_enabled = sss_enabled if sss_enabled is not None else SSS_ENABLED
         pretrained = pretrained or DARKNET53_PRETRAINED

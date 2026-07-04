@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""
+SDANet training script.
+
+All hyperparameters are read from ``config.py`` — no command-line arguments required.
+
+Usage:
+    python tools/train.py
+
+To override settings, edit ``config.py`` before running.
+"""
+
+import os
+import sys
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from config import (
+    BACKEND, DEVICE, NUM_WORKERS, BATCH_SIZE, INPUT_SIZE,
+    STEP_BATCH_SIZE, TRAIN_DATASETS, VAL_DATASETS, TEST_DATASETS,
+    USE_ACCUMULATION_STEP, USE_COSINE_SCHEDULER,
+    LR, MOMENTUM, WEIGHT_DECAY, WARMUP_ITERS, EPOCHS, ANCHORS, STRIDES,
+    RESUME, OUTPUT_DIR,
+)
+from util import (
+    compute_map, SDALoss,
+    decode_predictions, collate_fn, build_datasets, build_model,
+    warmup_lr, cosine_annealing_lr,
+)
+
+
+# ===================================================================
+#  Main
+# ===================================================================
+
+def main():
+    print(f"Backend: {BACKEND}, Device: {DEVICE}")
+    print(f"Train datasets: {TRAIN_DATASETS}")
+    print(f"Val datasets:   {VAL_DATASETS}")
+    print(f"Test datasets:  {TEST_DATASETS}")
+    print(f"Input size: {INPUT_SIZE}, Step batch: {STEP_BATCH_SIZE}, "
+          f"Epochs: {EPOCHS}")
+    print(f"Use cosine scheduler: {USE_COSINE_SCHEDULER}")
+
+    # ---- Datasets ----
+    train_ds, val_ds = build_datasets(TRAIN_DATASETS, VAL_DATASETS)
+    if train_ds is None:
+        raise RuntimeError("No training dataset found.  Check TRAIN_DATASETS in config.py.")
+
+    total_classes = max(
+        (ds.num_classes if hasattr(ds, 'num_classes') else 1)
+        for ds in ([train_ds, val_ds] if val_ds else [train_ds])
+        if ds is not None
+    )
+    print(f"Num classes: {total_classes}")
+
+    train_loader = DataLoader(
+        train_ds, batch_size=STEP_BATCH_SIZE, shuffle=True,
+        num_workers=NUM_WORKERS, collate_fn=collate_fn, pin_memory=True,
+        drop_last=True,
+    )
+    val_loader = None
+    if val_ds is not None:
+        val_loader = DataLoader(
+            val_ds, batch_size=STEP_BATCH_SIZE, shuffle=False,
+            num_workers=NUM_WORKERS, collate_fn=collate_fn, pin_memory=True,
+        )
+
+    # ---- Model ----
+    model = build_model(total_classes)
+    n_params = sum(p.numel() for p in model.parameters()) / 1e6
+    print(f"Model params: {n_params:.2f}M")
+
+    # ---- Loss & optimizer ----
+    criterion = SDALoss(total_classes, ANCHORS, STRIDES)
+    optimizer = torch.optim.SGD(
+        model.parameters(), lr=LR, momentum=MOMENTUM,
+        weight_decay=WEIGHT_DECAY,
+    )
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    # ---- Accumulation ----
+    accumulation_steps = 1
+    if USE_ACCUMULATION_STEP:
+        accumulation_steps = max(1, BATCH_SIZE // STEP_BATCH_SIZE)
+    print(f"Accumulation steps: {accumulation_steps}")
+
+    # ---- Resume ----
+    start_epoch = 0
+    global_step = 0
+    if RESUME and os.path.isfile(RESUME):
+        ckpt = torch.load(RESUME, map_location='cpu', weights_only=True)
+        model.load_state_dict(ckpt['model_state'])
+        optimizer.load_state_dict(ckpt['optimizer_state'])
+        start_epoch = ckpt.get('epoch', 0)
+        global_step = ckpt.get('global_step', 0)
+        print(f"Resumed from {RESUME} (epoch {start_epoch}, step {global_step})")
+
+    # ---- Training loop ----
+    max_iters = len(train_loader) * EPOCHS
+    for epoch in range(start_epoch + 1, EPOCHS + 1):
+        model.train()
+        epoch_loss = 0.0
+        optimizer.zero_grad()
+
+        for batch_idx, (images, boxes_list) in enumerate(train_loader):
+            global_step += 1
+
+            # LR schedule
+            warmup_lr(optimizer, WARMUP_ITERS, global_step)
+            if USE_COSINE_SCHEDULER and global_step >= WARMUP_ITERS:
+                cosine_annealing_lr(optimizer, max_iters, global_step)
+
+            if DEVICE == "cuda":
+                images = images.cuda()
+
+            preds = model(images)
+            loss = criterion(preds, boxes_list, images)
+            loss = loss / accumulation_steps
+            loss.backward()
+
+            if (batch_idx + 1) % accumulation_steps == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+
+            epoch_loss += loss.item() * accumulation_steps
+
+            if batch_idx % 20 == 0:
+                print(f"  epoch {epoch:3d} | iter {batch_idx:4d}/{len(train_loader)} "
+                      f"| loss {loss.item() * accumulation_steps:.4f} "
+                      f"| lr {optimizer.param_groups[0]['lr']:.6f}")
+
+        avg_loss = epoch_loss / len(train_loader)
+        print(f"--- epoch {epoch} done | avg_loss={avg_loss:.4f} ---")
+
+        # Save checkpoint
+        ckpt = {
+            'epoch': epoch,
+            'model_state': model.state_dict(),
+            'optimizer_state': optimizer.state_dict(),
+            'global_step': global_step,
+        }
+        ckpt_path = os.path.join(OUTPUT_DIR, f"sdanet_epoch{epoch:03d}.pth")
+        torch.save(ckpt, ckpt_path)
+        print(f"  saved: {ckpt_path}")
+
+        # ---- Validation ----
+        if val_loader is not None:
+            model.eval()
+            val_loss = 0.0
+            all_preds = []
+            all_targets = []
+            with torch.no_grad():
+                for images, boxes_list in val_loader:
+                    if DEVICE == "cuda":
+                        images = images.cuda()
+                    preds = model(images)
+                    val_loss += criterion(preds, boxes_list, images).item()
+                    # Decode predictions for mAP
+                    dets = decode_predictions(preds)
+                    all_preds.extend(dets)
+                    gts = []
+                    for b in boxes_list:
+                        bn = b.cpu().numpy() if torch.is_tensor(b) else b
+                        gts.append((bn, np.zeros(
+                            len(bn) if hasattr(bn, '__len__') else 0,
+                            dtype=np.int64)))
+                    all_targets.extend(gts)
+            val_loss = val_loss / len(val_loader)
+            if total_classes > 0 and len(all_preds) > 0:
+                map_results = compute_map(all_preds, all_targets,
+                                          [f"class_{i}" for i in range(total_classes)])
+                print(f"  val_loss={val_loss:.4f}  mAP@50={map_results['mAP']:.4f}")
+            else:
+                print(f"  val_loss={val_loss:.4f}")
+            model.train()
+
+    print("Training complete.")
+
+
+if __name__ == "__main__":
+    main()
