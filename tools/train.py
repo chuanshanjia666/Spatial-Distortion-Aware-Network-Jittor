@@ -27,6 +27,10 @@ from config import (
 if BACKEND == "pytorch":
     import torch
     from torch.utils.data import DataLoader
+    try:
+        from torch.amp import autocast, GradScaler
+    except ImportError:
+        from torch.cuda.amp import autocast, GradScaler
 else:
     import jittor as jt
 
@@ -136,6 +140,15 @@ def main():
     criterion = SDALoss(total_classes, ANCHORS, STRIDES)
     optimizer = build_optimizer(model)
 
+    # AMP mixed precision (PyTorch only)
+    if BACKEND == "pytorch":
+        try:
+            scaler = GradScaler('cuda')
+        except TypeError:
+            scaler = GradScaler()
+    else:
+        scaler = None
+
     max_iters = len(train_loader) * EPOCHS
     lr_scheduler = build_lr_scheduler(optimizer, max_iters)
 
@@ -179,17 +192,28 @@ def main():
                 else:
                     images = images.cuda()
 
-            preds = model(images)
-            loss = criterion(preds, boxes_list, images)
+            # AMP autocast for PyTorch forward pass
+            if BACKEND == "pytorch":
+                with autocast():
+                    preds = model(images)
+                    loss = criterion(preds, boxes_list, images)
+            else:
+                preds = model(images)
+                loss = criterion(preds, boxes_list, images)
+
             loss = loss / accumulation_steps
 
             if BACKEND == "pytorch":
-                loss.backward()
+                scaler.scale(loss).backward()
             else:
                 optimizer.backward(loss)
 
             if (batch_idx + 1) % accumulation_steps == 0:
-                optimizer.step()
+                if BACKEND == "pytorch":
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
                 optimizer.zero_grad()
 
             batch_loss = loss.item() if BACKEND == "pytorch" else loss.numpy()[0]
@@ -205,26 +229,19 @@ def main():
         print(f"--- epoch {epoch} done | avg_loss={avg_loss:.4f} ---")
 
         # ---- Save checkpoint ----
+        ckpt = {
+            'epoch': epoch,
+            'model_state': model.state_dict(),
+            'optimizer_state': optimizer.state_dict(),
+            'scaler_state': scaler.state_dict() if scaler is not None else None,
+            'global_step': global_step,
+        }
+        ckpt_path = os.path.join(OUTPUT_DIR, f"sdanet_epoch{epoch:03d}.pth")
         if BACKEND == "pytorch":
-            ckpt = {
-                'epoch': epoch,
-                'model_state': model.state_dict(),
-                'optimizer_state': optimizer.state_dict(),
-                'global_step': global_step,
-            }
-            ckpt_path = os.path.join(OUTPUT_DIR, f"sdanet_epoch{epoch:03d}.pth")
             torch.save(ckpt, ckpt_path)
-            print(f"  saved: {ckpt_path}")
         else:
-            ckpt = {
-                'epoch': epoch,
-                'model_state': model.state_dict(),
-                'optimizer_state': optimizer.state_dict(),
-                'global_step': global_step,
-            }
-            ckpt_path = os.path.join(OUTPUT_DIR, f"sdanet_epoch{epoch:03d}.pth")
             jt.save(ckpt, ckpt_path)
-            print(f"  saved: {ckpt_path}")
+        print(f"  saved: {ckpt_path}")
 
         # ---- Validation ----
         if val_loader is not None:
@@ -239,8 +256,13 @@ def main():
                     else:
                         images = images.cuda()
 
-                preds = model(images)
-                val_loss += criterion(preds, boxes_list, images)
+                if BACKEND == "pytorch":
+                    with torch.no_grad():
+                        preds = model(images)
+                        val_loss += criterion(preds, boxes_list, images)
+                else:
+                    preds = model(images)
+                    val_loss += criterion(preds, boxes_list, images)
 
                 # Decode predictions for mAP
                 dets = decode_predictions(preds)

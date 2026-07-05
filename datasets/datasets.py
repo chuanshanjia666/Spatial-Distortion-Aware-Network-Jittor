@@ -346,22 +346,88 @@ def get_dataset(spec="habbof[all]", root_dir=None, transform=None, seed=42):
 # ===================================================================
 
 if __name__ == "__main__":
+    import sys
+
+    def _sizeof_obj(obj, seen=None):
+        """Recursively estimate memory size of a Python object (approximate)."""
+        if seen is None:
+            seen = set()
+        obj_id = id(obj)
+        if obj_id in seen:
+            return 0
+        seen.add(obj_id)
+        size = sys.getsizeof(obj)
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                size += _sizeof_obj(k, seen) + _sizeof_obj(v, seen)
+        elif isinstance(obj, (list, tuple, set, frozenset)):
+            for item in obj:
+                size += _sizeof_obj(item, seen)
+        elif hasattr(obj, '__dict__'):
+            size += _sizeof_obj(vars(obj), seen)
+        return size
+
+    def sizeof_mb(obj):
+        return _sizeof_obj(obj) / (1024 * 1024)
+
     print(f"Backend: {BACKEND}")
     print(f"PFDAug: enabled={PFDAUG_ENABLED}, k={PFDAUG_K}, p={PFDAUG_P}\n")
 
     specs = [
-        ("habbof[all]",    "train"),
-        # ("fisheye8k[all]", "val"),
-        ("cepdof[all]",    "val"),
-        ("wepdtof[all]",   "val"),
+        "habbof[all]",
+        "cepdof[all]",
+        "wepdtof[all]",
+        "fisheye8k[all]",
     ]
-    for spec, split_override in specs:
+    total_annotation_mb = 0.0
+
+    for spec in specs:
         try:
             ds = get_dataset(spec)
-            print(f"  {spec}: {ds}")
-            img, boxes, labels = ds[0]
+            n = len(ds)
+
+            # ---- Annotation metadata memory ----
+            ann_mb = sizeof_mb(ds._images) + sizeof_mb(ds._anns_by_image) + sizeof_mb(ds._cats)
+            total_annotation_mb += ann_mb
+
+            # ---- Estimate image memory from metadata ----
+            total_pixels = 0
+            max_w, max_h = 0, 0
+            for img_id, info in ds._images.items():
+                w, h = info.get("width", 0), info.get("height", 0)
+                total_pixels += w * h
+                max_w = max(max_w, w)
+                max_h = max(max_h, h)
+
+            avg_pixels = total_pixels / n if n > 0 else 0
+            # Images stored as float32 (C,H,W): channels=3, 4 bytes per pixel
+            avg_img_mb = avg_pixels * 3 * 4 / (1024 * 1024)
+            total_img_mb = total_pixels * 3 * 4 / (1024 * 1024)
+            # Image tensors after resize+stack per batch (e.g. batch=8) — peak GPU for images only
+            img_batch_gpu_mb = 8 * 3 * 640 * 640 * 4 / (1024 * 1024)  # 640 resize
+
+            # ---- Boxes / annotations estimate ----
+            total_boxes = sum(len(v) for v in ds._anns_by_image.values())
+            avg_boxes = total_boxes / n if n > 0 else 0
+            boxes_meta_mb = sizeof_mb(ds._anns_by_image)
+
+            print(f"  {spec}:")
+            print(f"    samples:      {n:6d}")
+            print(f"    annotations:  {total_boxes:6d}  ({avg_boxes:.1f}/sample)")
+            print(f"    max img:      {max_w}x{max_h}")
+            print(f"    avg pixels:   {avg_pixels:,.0f}  ({avg_pixels:.0f} px)")
+            print(f"    annotations metadata:  {ann_mb:.1f} MB")
+            if total_boxes > 0:
+                print(f"    boxes metadata:        {boxes_meta_mb:.1f} MB")
+            print(f"    est. all img (FP32):   {total_img_mb:.1f} MB  (NOT loaded at once)")
+            print(f"    est. 1 img mean:       {avg_img_mb:.2f} MB")
+            print(f"    est. 1 batch img GPU:  {img_batch_gpu_mb:.1f} MB  (8x640x640, FP32)")
         except FileNotFoundError:
             print(f"  {spec}: SKIP (no file)")
         except Exception as e:
             print(f"  {spec}: ERROR — {e}")
+            import traceback
+            traceback.print_exc()
         print()
+
+    print(f"  Total annotations metadata (all datasets): {total_annotation_mb:.1f} MB")
