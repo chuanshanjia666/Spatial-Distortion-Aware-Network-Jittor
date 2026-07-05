@@ -29,11 +29,12 @@ Returns (image, boxes, labels) where:
 import os
 import json
 import sys
+import cv2
 import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from config import BACKEND, PFDAUG_ENABLED, PFDAUG_K, PFDAUG_P
+from config import BACKEND, INPUT_SIZE, PFDAUG_ENABLED, PFDAUG_K, PFDAUG_P
 from datasets.pfdaug import PFDAug
 
 # ---------------------------------------------------------------------------
@@ -78,6 +79,45 @@ def _pil_to_float_tensor(pil_img):
     if arr.ndim == 2:
         arr = np.stack([arr] * 3, axis=-1)
     return arr.transpose(2, 0, 1) / 255.0
+
+
+def _letterbox_resize(image_np, boxes_np, target_size):
+    """Resize image with uniform scaling + padding to square.
+
+    Both image and boxes are uniformly scaled so that the original
+    aspect ratio is preserved.  Rotated-box angles are NOT altered
+    because uniform scaling doesn't change rotation.
+
+    Args:
+        image_np:   (H, W, 3) uint8 numpy array.
+        boxes_np:   (N, 5) float32 [cx, cy, w, h, R] in original pixels.
+        target_size: int, output square size.
+
+    Returns:
+        (image, boxes) — image is (target_size, target_size, 3) uint8,
+        boxes in target_size pixel space.
+    """
+    H, W = image_np.shape[:2]
+    scale = target_size / max(H, W)
+    new_h, new_w = int(round(H * scale)), int(round(W * scale))
+
+    # Uniform resize
+    resized = cv2.resize(image_np, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+    # Pad to target_size (top-left aligned)
+    canvas = np.zeros((target_size, target_size, 3), dtype=np.uint8)
+    canvas[:new_h, :new_w, :] = resized
+
+    # Scale boxes uniformly
+    if boxes_np.shape[0] > 0:
+        boxes_np = boxes_np.copy()
+        boxes_np[:, 0] *= scale
+        boxes_np[:, 1] *= scale
+        boxes_np[:, 2] *= scale
+        boxes_np[:, 3] *= scale
+        # R unchanged — uniform scaling preserves angle
+
+    return canvas, boxes_np
 
 
 # ===================================================================
@@ -200,16 +240,18 @@ class FisheyeDataset(Dataset):
             image = Image.fromarray(image_np)
             boxes = boxes_np.tolist()
 
-        boxes_arr = (
-            np.array(boxes, dtype=np.float32) if boxes
-            else np.empty((0, 5), dtype=np.float32)
-        )
+        # ---- Uniform resize + letterbox to INPUT_SIZE ----
+        image_np = np.array(image)
+        boxes_np = np.array(boxes, dtype=np.float32) if boxes else np.empty((0, 5), dtype=np.float32)
+        image_np, boxes_np = _letterbox_resize(image_np, boxes_np, INPUT_SIZE)
+
+        boxes_arr = boxes_np.astype(np.float32)
         labels_arr = (
             np.array(labels, dtype=np.int64) if labels
             else np.empty((0,), dtype=np.int64)
         )
 
-        img_tensor = to_tensor(_pil_to_float_tensor(image), dtype=FLOAT_DTYPE)
+        img_tensor = to_tensor(_pil_to_float_tensor(Image.fromarray(image_np)), dtype=FLOAT_DTYPE)
         boxes_tensor = to_tensor(boxes_arr, dtype=FLOAT_DTYPE)
         labels_tensor = to_tensor(labels_arr, dtype=LONG_DTYPE)
 
@@ -346,88 +388,55 @@ def get_dataset(spec="habbof[all]", root_dir=None, transform=None, seed=42):
 # ===================================================================
 
 if __name__ == "__main__":
-    import sys
+    import argparse
 
-    def _sizeof_obj(obj, seen=None):
-        """Recursively estimate memory size of a Python object (approximate)."""
-        if seen is None:
-            seen = set()
-        obj_id = id(obj)
-        if obj_id in seen:
-            return 0
-        seen.add(obj_id)
-        size = sys.getsizeof(obj)
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                size += _sizeof_obj(k, seen) + _sizeof_obj(v, seen)
-        elif isinstance(obj, (list, tuple, set, frozenset)):
-            for item in obj:
-                size += _sizeof_obj(item, seen)
-        elif hasattr(obj, '__dict__'):
-            size += _sizeof_obj(vars(obj), seen)
-        return size
-
-    def sizeof_mb(obj):
-        return _sizeof_obj(obj) / (1024 * 1024)
+    parser = argparse.ArgumentParser(
+        description="Dataset smoke-test / visualization")
+    parser.add_argument("--vis", type=str, nargs="?", const="datasets/vis",
+                        metavar="DIR",
+                        help="Visualize first 8 samples and save to DIR")
+    parser.add_argument("--spec", type=str, default="habbof[train]",
+                        help="Dataset spec, e.g. habbof[train]")
+    args = parser.parse_args()
 
     print(f"Backend: {BACKEND}")
-    print(f"PFDAug: enabled={PFDAUG_ENABLED}, k={PFDAUG_K}, p={PFDAUG_P}\n")
+    print(f"PFDAug: enabled={PFDAUG_ENABLED}, k={PFDAUG_K}, p={PFDAUG_P}")
+    print(f"Input size: {INPUT_SIZE}\n")
 
-    specs = [
-        "habbof[all]",
-        "cepdof[all]",
-        "wepdtof[all]",
-        "fisheye8k[all]",
-    ]
-    total_annotation_mb = 0.0
+    ds = get_dataset(args.spec)
+    n = len(ds)
+    print(f"  {args.spec}: {n} samples, {ds.num_classes} classes")
+    total_boxes = sum(len(v) for v in ds._anns_by_image.values())
+    print(f"  total annotations: {total_boxes} ({total_boxes / n:.1f}/sample)")
 
-    for spec in specs:
-        try:
-            ds = get_dataset(spec)
-            n = len(ds)
+    largest_img = max(ds._images.items(), key=lambda x: x[1].get("width", 0) * x[1].get("height", 0))
+    info = largest_img[1]
+    print(f"  largest image: {info['width']}×{info['height']}")
 
-            # ---- Annotation metadata memory ----
-            ann_mb = sizeof_mb(ds._images) + sizeof_mb(ds._anns_by_image) + sizeof_mb(ds._cats)
-            total_annotation_mb += ann_mb
+    # ---- Visualization ----
+    if args.vis:
+        os.makedirs(args.vis, exist_ok=True)
+        print(f"\n  Visualizing first 8 samples → {args.vis}/")
+        for i in range(min(8, n)):
+            img_tensor, boxes_tensor, labels_tensor = ds[i]
+            img = img_tensor.cpu().numpy().transpose(1, 2, 0)
+            img = (np.clip(img, 0, 1) * 255).astype(np.uint8).copy()
+            boxes = boxes_tensor.cpu().numpy()
 
-            # ---- Estimate image memory from metadata ----
-            total_pixels = 0
-            max_w, max_h = 0, 0
-            for img_id, info in ds._images.items():
-                w, h = info.get("width", 0), info.get("height", 0)
-                total_pixels += w * h
-                max_w = max(max_w, w)
-                max_h = max(max_h, h)
+            for (cx, cy, w, h, R) in boxes:
+                pts = cv2.boxPoints(((float(cx), float(cy)),
+                                     (float(w), float(h)), float(R)))
+                cv2.drawContours(img, [np.intp(pts)], 0, (0, 255, 0), 2)
 
-            avg_pixels = total_pixels / n if n > 0 else 0
-            # Images stored as float32 (C,H,W): channels=3, 4 bytes per pixel
-            avg_img_mb = avg_pixels * 3 * 4 / (1024 * 1024)
-            total_img_mb = total_pixels * 3 * 4 / (1024 * 1024)
-            # Image tensors after resize+stack per batch (e.g. batch=8) — peak GPU for images only
-            img_batch_gpu_mb = 8 * 3 * 640 * 640 * 4 / (1024 * 1024)  # 640 resize
-
-            # ---- Boxes / annotations estimate ----
-            total_boxes = sum(len(v) for v in ds._anns_by_image.values())
-            avg_boxes = total_boxes / n if n > 0 else 0
-            boxes_meta_mb = sizeof_mb(ds._anns_by_image)
-
-            print(f"  {spec}:")
-            print(f"    samples:      {n:6d}")
-            print(f"    annotations:  {total_boxes:6d}  ({avg_boxes:.1f}/sample)")
-            print(f"    max img:      {max_w}x{max_h}")
-            print(f"    avg pixels:   {avg_pixels:,.0f}  ({avg_pixels:.0f} px)")
-            print(f"    annotations metadata:  {ann_mb:.1f} MB")
-            if total_boxes > 0:
-                print(f"    boxes metadata:        {boxes_meta_mb:.1f} MB")
-            print(f"    est. all img (FP32):   {total_img_mb:.1f} MB  (NOT loaded at once)")
-            print(f"    est. 1 img mean:       {avg_img_mb:.2f} MB")
-            print(f"    est. 1 batch img GPU:  {img_batch_gpu_mb:.1f} MB  (8x640x640, FP32)")
-        except FileNotFoundError:
-            print(f"  {spec}: SKIP (no file)")
-        except Exception as e:
-            print(f"  {spec}: ERROR — {e}")
-            import traceback
-            traceback.print_exc()
-        print()
-
-    print(f"  Total annotations metadata (all datasets): {total_annotation_mb:.1f} MB")
+            cv2.putText(img, f"#{i}  {len(boxes)} boxes", (5, 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            out_path = os.path.join(args.vis, f"dataset_sample_{i:02d}.png")
+            cv2.imwrite(out_path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+        print("  Done.")
+    else:
+        # Quick smoke: check first sample
+        img, boxes, labels = ds[0]
+        if BACKEND == "pytorch":
+            print(f"  sample 0: img={tuple(img.shape)}, boxes={boxes.shape}, labels={labels.shape}")
+        else:
+            print(f"  sample 0: img={img.shape}, boxes={boxes.shape}, labels={labels.shape}")

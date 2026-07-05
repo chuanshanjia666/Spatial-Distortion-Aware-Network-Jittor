@@ -32,9 +32,9 @@ NUM_WORKERS = 4
 #   VAL_DATASETS   = ["habbof[val]",   "cepdof[val]"]
 #   TEST_DATASETS  = ["wepdtof[test]", "fisheye8k[test]"]
 
-TRAIN_DATASETS = ["habbof[train]","wepdtof[train]",]
-VAL_DATASETS   = ["cepdof[val]"]
-TEST_DATASETS  = []                       # empty → skip test evaluation
+TRAIN_DATASETS = ["habbof[train]"]
+VAL_DATASETS   = ["habbof[val]"]
+TEST_DATASETS  = ["habbof[test]"]                       # empty → skip test evaluation
 
 # ---------------------------------------------------------------------------
 # PFDAug — online distortion augmentation (paper Section IV)
@@ -47,7 +47,7 @@ PFDAUG_P = 0.5             # probability per sample
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
-BATCH_SIZE = 128
+BATCH_SIZE = 64
 INPUT_SIZE = 416            # input image size (square: 640×640)
 
 # Gradient accumulation: when enabled, use smaller per-step batches
@@ -110,11 +110,15 @@ NUM_ANCHORS = 3             # anchors per scale, same as YOLOv3
 # Output per anchor: [cx, cy, w, h, θ, obj_conf] — oriented bounding box
 BOX_FIELDS = 6              # cx, cy, w, h, θ, confidence
 
-# Anchors (same as YOLOv3, pre-scaled)
+# Anchors (per-scale, auto-computed from k-means on training datasets)
+# Default YOLOv3 anchors below; to re-cluster for your data run:
+#     python util/anchor_cluster.py
+# The training script will automatically load cached anchors if available.
+ANCHORS_AUTO_CLUSTER = True  # if True, load from cache; else use ANCHORS below
 ANCHORS = [
-    [(10, 13), (16, 30), (33, 23)],     # small  scale (stride 8)
-    [(30, 61), (62, 45), (59, 119)],    # medium scale (stride 16)
-    [(116, 90), (156, 198), (373, 326)], # large  scale (stride 32)
+    [(10, 13), (16, 30), (33, 23)],       # small  scale (stride 8)
+    [(30, 61), (62, 45), (59, 119)],      # medium scale (stride 16)
+    [(116, 90), (156, 198), (373, 326)],  # large  scale (stride 32)
 ]
 
 # Strides for each detection scale

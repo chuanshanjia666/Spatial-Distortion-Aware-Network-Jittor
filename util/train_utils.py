@@ -9,7 +9,7 @@ Supports both PyTorch and Jittor backends.
 
 import numpy as np
 from config import (BACKEND, ANCHORS, STRIDES, BOX_FIELDS, INPUT_SIZE,
-                    DEVICE, LR, MIN_LR, WARMUP_ITERS)
+                    DEVICE, LR, MIN_LR, WARMUP_ITERS, ANCHORS_AUTO_CLUSTER)
 
 if BACKEND == "pytorch":
     import torch
@@ -25,7 +25,7 @@ else:
 # ===================================================================
 
 def decode_predictions(predictions, conf_thresh=0.3):
-    """Decode YOLO-style outputs → per-image (boxes, scores, labels).
+    """Decode YOLO-style outputs → per-image (boxes, scores, labels) — vectorised.
 
     Args:
         predictions: list of 3 tensors (B, A*6, Hs, Ws).
@@ -46,44 +46,56 @@ def decode_predictions(predictions, conf_thresh=0.3):
             A = len(ANCHORS[s_idx])
             _, _, Hs, Ws = pred.shape
 
+            # (A, 6, H, W) → numpy, one image
             if BACKEND == "pytorch":
                 pred_np = pred[b].view(A, BOX_FIELDS, Hs, Ws).detach().cpu().numpy()
             else:
                 pred_np = pred[b].view(A, BOX_FIELDS, Hs, Ws).numpy()
 
-            for a in range(A):
-                aw, ah = ANCHORS[s_idx][a]
-                for gy in range(Hs):
-                    for gx in range(Ws):
-                        obj = 1.0 / (1.0 + np.exp(-pred_np[a, 5, gy, gx]))
-                        if obj < conf_thresh:
-                            continue
-                        tx = pred_np[a, 0, gy, gx]
-                        ty = pred_np[a, 1, gy, gx]
-                        tw = pred_np[a, 2, gy, gx]
-                        th = pred_np[a, 3, gy, gx]
-                        tR = pred_np[a, 4, gy, gx]
+            # Confidence: sigmoid on channel 5 → (A, H, W)
+            obj = 1.0 / (1.0 + np.exp(-pred_np[:, 5, :, :]))
+            mask = obj >= conf_thresh
+            a_idx, gy, gx = np.where(mask)
 
-                        cx = (gx + 1.0 / (1.0 + np.exp(-tx))) * stride
-                        cy = (gy + 1.0 / (1.0 + np.exp(-ty))) * stride
-                        w = np.exp(tw) * aw
-                        h = np.exp(th) * ah
-                        R = tR * 90.0
-                        R = (R + 90.0) % 180.0 - 90.0
+            if mask.sum() == 0:
+                continue
 
-                        img_boxes.append([cx, cy, w, h, R])
-                        img_scores.append(obj)
-                        img_labels.append(0)  # TODO: class prediction
+            # Gather predictions for positive cells: (K,) where K = mask.sum()
+            tx = pred_np[a_idx, 0, gy, gx]
+            ty = pred_np[a_idx, 1, gy, gx]
+            tw = pred_np[a_idx, 2, gy, gx]
+            th = pred_np[a_idx, 3, gy, gx]
+            tR = pred_np[a_idx, 4, gy, gx]
+
+            scores_k = obj[a_idx, gy, gx]
+
+            aw = np.array([ANCHORS[s_idx][a][0] for a in a_idx], dtype=np.float32)
+            ah = np.array([ANCHORS[s_idx][a][1] for a in a_idx], dtype=np.float32)
+
+            cx = (gx.astype(np.float32) + tx) * stride
+            cy = (gy.astype(np.float32) + ty) * stride
+            w = np.exp(tw) * aw
+            h = np.exp(th) * ah
+            R = tR * 90.0
+            R = (R + 90.0) % 180.0 - 90.0
+
+            boxes_k = np.stack([cx, cy, w, h, R], axis=-1).astype(np.float32)
+            img_boxes.append(boxes_k)
+            img_scores.append(scores_k.astype(np.float32))
+            img_labels.append(np.zeros(len(boxes_k), dtype=np.int64))
 
         if img_boxes:
-            all_dets.append((np.array(img_boxes, dtype=np.float32),
-                             np.array(img_scores, dtype=np.float32),
-                             np.array(img_labels, dtype=np.int64)))
+            all_dets.append((
+                np.concatenate(img_boxes, axis=0),
+                np.concatenate(img_scores, axis=0),
+                np.concatenate(img_labels, axis=0),
+            ))
         else:
-            all_dets.append(
-                (np.empty((0, 5), dtype=np.float32),
-                 np.empty((0,), dtype=np.float32),
-                 np.empty((0,), dtype=np.int64)))
+            all_dets.append((
+                np.empty((0, 5), dtype=np.float32),
+                np.empty((0,), dtype=np.float32),
+                np.empty((0,), dtype=np.int64),
+            ))
     return all_dets
 
 
@@ -120,7 +132,10 @@ def resize_image_and_boxes(image, boxes, target_size):
 # ===================================================================
 
 def collate_fn(batch):
-    """Resize all images to INPUT_SIZE and stack into a batch.
+    """Stack images into a batch.
+
+    Images are already resized to INPUT_SIZE in the dataset (uniform
+    scale + letterbox), so collate_fn only needs to stack.
 
     Args:
         batch: list of (image, boxes, labels) from dataset.
@@ -131,18 +146,12 @@ def collate_fn(batch):
         boxes_list: list of (N, 5) tensors per image (variable N).
     """
     images, boxes_list, labels_list = zip(*batch)
-    resized_images = []
-    resized_boxes = []
-    for img, bxs in zip(images, boxes_list):
-        img, bxs = resize_image_and_boxes(img, bxs, INPUT_SIZE)
-        resized_images.append(img)
-        resized_boxes.append(bxs)
 
     if BACKEND == "pytorch":
-        images = torch.stack(resized_images, dim=0)
+        images = torch.stack(images, dim=0)
     else:
-        images = jt.stack(resized_images, dim=0)
-    return images, list(zip(resized_boxes, labels_list))
+        images = jt.stack(images, dim=0)
+    return images, list(zip(boxes_list, labels_list))
 
 
 # ===================================================================
@@ -152,14 +161,29 @@ def collate_fn(batch):
 def build_datasets(train_specs, val_specs):
     """Build training and validation ConcatDatasets from spec lists.
 
+    Also auto-loads clustered anchors if ANCHORS_AUTO_CLUSTER is True.
+
     Args:
         train_specs: list of ``"preset[split]"`` specs for training.
         val_specs:   list of ``"preset[split]"`` specs for validation.
 
     Returns:
-        (train_dataset, val_dataset) — either may be None.
+        (train_dataset, val_dataset, anchors) — either dataset may be None.
     """
     from datasets import get_dataset
+
+    # ---- Auto-load clustered anchors ----
+    resolved_anchors = list(ANCHORS)
+    if ANCHORS_AUTO_CLUSTER:
+        try:
+            from util.anchor_cluster import load_or_cluster_anchors
+            clustered = load_or_cluster_anchors(
+                train_specs, num_clusters=len(ANCHORS) * len(ANCHORS[0]),
+                input_size=INPUT_SIZE,
+            )
+            resolved_anchors = clustered
+        except Exception as e:
+            print(f"  [anchor] Auto-cluster failed ({e}), using config ANCHORS")
 
     train_ds = []
     val_ds = []
@@ -186,7 +210,7 @@ def build_datasets(train_specs, val_specs):
         # Jittor equivalent: simple concat via ConcatDataset
         train = _JittorConcatDataset(train_ds) if train_ds else None
         val = _JittorConcatDataset(val_ds) if val_ds else None
-    return train, val
+    return train, val, resolved_anchors
 
 
 class _JittorConcatDataset:

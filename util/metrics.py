@@ -121,7 +121,7 @@ def compute_ap(recall: np.ndarray, precision: np.ndarray):
 
 
 def compute_map(predictions, targets, class_names, iou_thresh=0.5):
-    """Compute mAP@IoU_thresh for oriented boxes.
+    """Compute AP@IoU_thresh and mAP for oriented boxes.
 
     Args:
         predictions:  list of (boxes, scores, labels) per image.
@@ -137,10 +137,16 @@ def compute_map(predictions, targets, class_names, iou_thresh=0.5):
     """
     n_classes = len(class_names)
     results = {}
+    total_gt = 0
+    total_dets = 0
+
+    # Precision-Recall data across all classes (for mAP)
+    all_recalls = []
+    all_precisions = []
 
     for c in range(n_classes):
         # Collect all detections and all GT for this class
-        all_dets = []   # (img_idx, score, is_match)
+        all_dets = []   # (score, is_match)
         n_gt = 0
 
         for img_idx, (pred, gt) in enumerate(zip(predictions, targets)):
@@ -170,8 +176,11 @@ def compute_map(predictions, targets, class_names, iou_thresh=0.5):
                         is_match = True
                 all_dets.append((det_scores[idx], is_match))
 
+        total_gt += n_gt
+        total_dets += len(all_dets)
+
         if n_gt == 0 and len(all_dets) == 0:
-            ap = 1.0  # no GT and no predictions → perfect by convention
+            ap = float("nan")  # no GT no pred → undefined, excluded from mAP
         elif n_gt == 0:
             ap = 0.0  # noise detections only
         else:
@@ -183,11 +192,94 @@ def compute_map(predictions, targets, class_names, iou_thresh=0.5):
             recall = tp_cum / n_gt
             precision = tp_cum / (tp_cum + fp_cum + 1e-8)
             ap = compute_ap(recall, precision)
+            all_recalls.append(recall)
+            all_precisions.append(precision)
 
         results[class_names[c]] = ap
 
-    results["mAP"] = np.mean(list(results.values())[:n_classes])
+    results["mAP"] = np.nanmean(list(results.values())[:n_classes])
+    results["GT_count"] = total_gt
+    results["Det_count"] = total_dets
     return results
+
+
+def compute_map_coco(predictions, targets, class_names):
+    """Compute COCO-style mAP across multiple IoU thresholds.
+
+    Computes AP@[.50, .55, ..., .95] (10 levels) and reports:
+        - AP@50       standard PASCAL VOC metric
+        - AP@75       stricter IoU threshold
+        - mAP         COCO AP averaged over all thresholds
+        - AP_small    AP for objects with area < 32² pixels
+        - AP_medium   AP for objects with 32² ≤ area < 96² pixels
+        - AP_large    AP for objects with area ≥ 96² pixels
+
+    Returns:
+        dict with keys: AP50, AP75, mAP, AP_small, AP_medium, AP_large,
+        AP50_per_class, GT_count, Det_count.
+    """
+    iou_thresholds = np.linspace(0.50, 0.95, 10)
+    area_ranges = {
+        "small":  (0,     32 * 32),
+        "medium": (32 * 32, 96 * 96),
+        "large":  (96 * 96, float("inf")),
+    }
+
+    results = {}
+    all_ap_across_ious = {area_key: [] for area_key in area_ranges}
+
+    for iou in iou_thresholds:
+        ap_results = compute_map(predictions, targets, class_names, iou_thresh=float(iou))
+        all_ap_across_ious.setdefault("all", []).append(ap_results["mAP"])
+        results.setdefault("AP_per_iou", []).append(ap_results["mAP"])
+
+    # Compute area-stratified AP
+    for area_key, (lo, hi) in area_ranges.items():
+        # Filter predictions and targets by box area
+        area_results = _compute_ap_by_area(predictions, targets, class_names,
+                                           lo, hi, iou_thresholds)
+        all_ap_across_ious[area_key] = area_results
+
+    results["AP50"] = float(all_ap_across_ious["all"][0])
+    results["AP75"] = float(all_ap_across_ious["all"][5])  # index 5 = 0.75
+    results["mAP"] = float(np.nanmean(all_ap_across_ious["all"]))
+    for k in area_ranges:
+        results[f"AP_{k}"] = float(np.nanmean(all_ap_across_ious[k]))
+
+    results["GT_count"] = sum(
+        len(t[0]) for t in targets if hasattr(t, '__len__'))
+    results["Det_count"] = sum(
+        len(p[0]) for p in predictions if hasattr(p, '__len__'))
+
+    return results
+
+
+def _compute_ap_by_area(predictions, targets, class_names,
+                        lo: float, hi: float, iou_thresholds: np.ndarray):
+    """Compute mAP across thresholds, only for boxes in [lo, hi) pixel area."""
+    aps = []
+    for iou in iou_thresholds:
+        filtered_preds = []
+        filtered_targets = []
+        for pred, gt in zip(predictions, targets):
+            p_boxes, p_scores, p_labels = pred
+            t_boxes, t_labels = gt
+
+            # Filter by area
+            p_area = p_boxes[:, 2] * p_boxes[:, 3]
+            t_area = t_boxes[:, 2] * t_boxes[:, 3]
+            p_keep = (p_area >= lo) & (p_area < hi)
+            t_keep = (t_area >= lo) & (t_area < hi)
+
+            filtered_preds.append((
+                p_boxes[p_keep], p_scores[p_keep], p_labels[p_keep]
+            ))
+            filtered_targets.append((t_boxes[t_keep], t_labels[t_keep]))
+
+        map_result = compute_map(filtered_preds, filtered_targets,
+                                 class_names, iou_thresh=float(iou))
+        aps.append(map_result["mAP"])
+    return aps
 
 
 # ===================================================================

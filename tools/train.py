@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
     BACKEND, DEVICE, NUM_WORKERS, BATCH_SIZE, INPUT_SIZE,
     STEP_BATCH_SIZE, TRAIN_DATASETS, VAL_DATASETS, TEST_DATASETS,
-    USE_ACCUMULATION_STEP, EPOCHS, ANCHORS, STRIDES,
+    USE_ACCUMULATION_STEP, EPOCHS, STRIDES,
     RESUME, OUTPUT_DIR,
 )
 
@@ -32,7 +32,7 @@ else:
     import jittor as jt
 
 from util import (
-    compute_map, SDALoss,
+    compute_map, compute_map_coco, SDALoss,
     decode_predictions, collate_fn, build_datasets, build_model,
     build_optimizer, build_lr_scheduler,
 )
@@ -104,7 +104,7 @@ def main():
           f"Epochs: {EPOCHS}")
 
     # ---- Datasets ----
-    train_ds, val_ds = build_datasets(TRAIN_DATASETS, VAL_DATASETS)
+    train_ds, val_ds, resolved_anchors = build_datasets(TRAIN_DATASETS, VAL_DATASETS)
     if train_ds is None:
         raise RuntimeError("No training dataset found.  Check TRAIN_DATASETS in config.py.")
 
@@ -134,7 +134,7 @@ def main():
     print(f"Model params: {n_params:.2f}M")
 
     # ---- Loss & optimizer & scheduler ----
-    criterion = SDALoss(total_classes, ANCHORS, STRIDES)
+    criterion = SDALoss(total_classes, resolved_anchors, STRIDES)
     optimizer = build_optimizer(model)
 
     # AMP mixed precision (PyTorch only)
@@ -262,18 +262,23 @@ def main():
                 dets = decode_predictions(preds)
                 all_preds.extend(dets)
                 gts = []
-                for b in boxes_list:
+                for item in boxes_list:
+                    # item is (boxes, labels) from collate_fn
+                    if isinstance(item, (list, tuple)):
+                        b = item[0]
+                        l = item[1]
+                    else:
+                        b = item
+                        l = np.zeros(len(b) if hasattr(b, '__len__') else 0, dtype=np.int64)
                     if BACKEND == "pytorch":
                         bn = b.cpu().numpy() if torch.is_tensor(b) else b
+                        ln = l.cpu().numpy() if torch.is_tensor(l) else l
                     else:
                         bn = b.numpy() if hasattr(b, 'numpy') else b
-                    gts.append((
-                        bn,
-                        np.zeros(
-                            len(bn) if hasattr(bn, '__len__') else 0,
-                            dtype=np.int64
-                        )
-                    ))
+                        ln = l.numpy() if hasattr(l, 'numpy') else l
+                    if not isinstance(ln, np.ndarray):
+                        ln = np.array(ln, dtype=np.int64)
+                    gts.append((bn, ln))
                 all_targets.extend(gts)
 
             val_loss = val_loss.item() if BACKEND == "pytorch" else val_loss.numpy()[0]

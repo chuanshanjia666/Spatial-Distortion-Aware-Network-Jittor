@@ -119,6 +119,12 @@ class SDALoss(nn.Module):
                 boxes_scaled = boxes.clone()
                 boxes_scaled[:, :4] /= stride
 
+                # Canonicalise w/h per-box: w=short, h=long (matches anchor clustering)
+                for ib in range(boxes_scaled.shape[0]):
+                    w, h = boxes_scaled[ib, 2].item(), boxes_scaled[ib, 3].item()
+                    if w > h:
+                        boxes_scaled[ib, 2], boxes_scaled[ib, 3] = h, w
+
                 for box in boxes_scaled:
                     cx_g, cy_g = box[0], box[1]  # grid-cell coords (float)
                     gx = int(cx_g)
@@ -127,13 +133,14 @@ class SDALoss(nn.Module):
                         continue
 
                     # Find best anchor by IoU of w, h only
+                    # bw,bh already canonicalised above, just use as-is
                     bw, bh = box[2], box[3]
                     if BACKEND == "pytorch":
-                        anchor_ws = self.anchors[s_idx, :, 0]  # (A,)
-                        anchor_hs = self.anchors[s_idx, :, 1]
+                        anchor_ws = self.anchors[s_idx, :, 0] / stride  # (A,) grid-scale
+                        anchor_hs = self.anchors[s_idx, :, 1] / stride
                     else:
-                        anchor_ws = self.anchors[s_idx, :, 0]
-                        anchor_hs = self.anchors[s_idx, :, 1]
+                        anchor_ws = self.anchors[s_idx, :, 0] / stride
+                        anchor_hs = self.anchors[s_idx, :, 1] / stride
                     ious = _wh_iou(bw, bh, anchor_ws, anchor_hs)
                     best_a = int(ious.argmax().item())
 

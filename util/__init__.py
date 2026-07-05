@@ -4,6 +4,7 @@ from .metrics import (
     oriented_nms,
     compute_ap,
     compute_map,
+    compute_map_coco,
     cxcywhR_to_corners,
     corners_to_cxcywhR,
 )
