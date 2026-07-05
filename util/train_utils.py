@@ -130,7 +130,7 @@ def collate_fn(batch):
         images: (B, C, INPUT_SIZE, INPUT_SIZE).
         boxes_list: list of (N, 5) tensors per image (variable N).
     """
-    images, boxes_list, _labels_list = zip(*batch)
+    images, boxes_list, labels_list = zip(*batch)
     resized_images = []
     resized_boxes = []
     for img, bxs in zip(images, boxes_list):
@@ -142,7 +142,7 @@ def collate_fn(batch):
         images = torch.stack(resized_images, dim=0)
     else:
         images = jt.stack(resized_images, dim=0)
-    return images, resized_boxes
+    return images, list(zip(resized_boxes, labels_list))
 
 
 # ===================================================================

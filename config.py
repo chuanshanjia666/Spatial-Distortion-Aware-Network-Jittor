@@ -32,8 +32,8 @@ NUM_WORKERS = 4
 #   VAL_DATASETS   = ["habbof[val]",   "cepdof[val]"]
 #   TEST_DATASETS  = ["wepdtof[test]", "fisheye8k[test]"]
 
-TRAIN_DATASETS = ["habbof[all]","wepdtof[all]",]
-VAL_DATASETS   = ["wepdtof[all]"]
+TRAIN_DATASETS = ["habbof[train]","wepdtof[train]",]
+VAL_DATASETS   = ["cepdof[val]"]
 TEST_DATASETS  = []                       # empty → skip test evaluation
 
 # ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@ PFDAUG_P = 0.5             # probability per sample
 # Training
 # ---------------------------------------------------------------------------
 BATCH_SIZE = 128
-INPUT_SIZE = 640            # input image size (square: 640×640)
+INPUT_SIZE = 416            # input image size (square: 640×640)
 
 # Gradient accumulation: when enabled, use smaller per-step batches
 # and replace BatchNorm with GroupNorm (BN is unstable with small micro-batches).

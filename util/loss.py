@@ -150,14 +150,14 @@ class SDALoss(nn.Module):
                     noobj_mask[b, best_a, gy, gx] = 0.0
 
             # ---- Box loss (MSE on tx, ty, tw, th, tR for positives) ----
-            box_pred = pred[..., :5]   # (B, A, 5, Hs, Ws)
-            box_tgt = tgt[..., :5]
+            box_pred = pred[:, :, :5, :, :]   # (B, A, 5, Hs, Ws)
+            box_tgt = tgt[:, :, :5, :, :]
             box_loss = self.mse(box_pred, box_tgt).sum(dim=2)  # (B, A, Hs, Ws)
             box_loss = (box_loss * obj_mask).sum() / max(obj_mask.sum(), 1)
             total_loss = total_loss + self.box_weight * box_loss
 
             # ---- Objectness loss (BCE, pos:neg = 2:1) ----
-            obj_pred = pred[..., 5]  # (B, A, Hs, Ws)
+            obj_pred = pred[:, :, 5, :, :]  # (B, A, Hs, Ws)
             obj_tgt = obj_mask
             obj_loss_pos = self.bce(obj_pred, obj_tgt) * obj_mask
             obj_loss_neg = self.bce(obj_pred, obj_tgt) * noobj_mask * 0.5

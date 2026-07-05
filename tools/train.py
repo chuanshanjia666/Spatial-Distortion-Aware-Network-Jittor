@@ -26,11 +26,8 @@ from config import (
 
 if BACKEND == "pytorch":
     import torch
+    import torch.cuda.amp as amp
     from torch.utils.data import DataLoader
-    try:
-        from torch.amp import autocast, GradScaler
-    except ImportError:
-        from torch.cuda.amp import autocast, GradScaler
 else:
     import jittor as jt
 
@@ -142,10 +139,7 @@ def main():
 
     # AMP mixed precision (PyTorch only)
     if BACKEND == "pytorch":
-        try:
-            scaler = GradScaler('cuda')
-        except TypeError:
-            scaler = GradScaler()
+        scaler = amp.GradScaler()
     else:
         scaler = None
 
@@ -194,7 +188,7 @@ def main():
 
             # AMP autocast for PyTorch forward pass
             if BACKEND == "pytorch":
-                with autocast():
+                with amp.autocast():
                     preds = model(images)
                     loss = criterion(preds, boxes_list, images)
             else:
