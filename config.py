@@ -41,7 +41,7 @@ TEST_DATASETS  = ["habbof[test]"]                       # empty → skip test ev
 # ---------------------------------------------------------------------------
 # Applied only to training split; val/test use raw images.
 PFDAUG_ENABLED = True
-PFDAUG_K = 0.5             # distortion coefficient (paper default 0.5)
+PFDAUG_K = (0.1,0.2,0.3,0.35,0.4,0.45,0.48,0.49,0.5)   # distortion coefficient tuple, randomly sampled per image
 PFDAUG_P = 0.5             # probability per sample
 
 # ---------------------------------------------------------------------------

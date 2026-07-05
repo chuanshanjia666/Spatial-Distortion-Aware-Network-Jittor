@@ -25,13 +25,13 @@ class PFDAug:
     """Prominent Fisheye Distortion Augmentation.
 
     Args:
-        k  : Distortion coefficient.  Larger k → stronger barrel distortion.
-             Paper default is 0.5; 0.8 may hurt on "easy" scenes.
+        k  : Tuple of distortion coefficients. Randomly sampled per image.
+             Larger k → stronger barrel distortion. E.g. (0.3, 0.5, 0.7).
         p  : Probability of applying the augmentation.
         seed: Optional RNG seed for reproducibility.
     """
 
-    def __init__(self, k: float = 0.5, p: float = 0.5, seed: int | None = None):
+    def __init__(self, k: tuple = (0.5,), p: float = 0.5, seed: int | None = None):
         self.k = k
         self.p = p
         self.rng = np.random.default_rng(seed)
@@ -54,7 +54,9 @@ class PFDAug:
         """
         if self.p < 1.0 and self.rng.random() > self.p:
             return image, boxes
-        return self.forward(image, boxes, self.k)
+        # Randomly select k from the tuple
+        k = self.rng.choice(self.k)
+        return self.forward(image, boxes, k)
 
     def forward(self, image: np.ndarray, boxes: np.ndarray, k: float):
         """Deterministic forward pass (always applies distortion)."""
