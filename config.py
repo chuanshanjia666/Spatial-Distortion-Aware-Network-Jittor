@@ -65,7 +65,7 @@ MAX_ITER = 6000             # fine-tuning iterations on fisheye datasets
 WARMUP_ITERS = 1000
 EPOCHS = 50                 # number of training epochs
 RESUME = None               # path to checkpoint for resuming (None = train from scratch)
-OUTPUT_DIR = "checkpoints"   # directory for saving checkpoints
+OUTPUT_DIR = "output"   # directory for saving checkpoints
 
 # Cosine annealing LR scheduler
 USE_COSINE_SCHEDULER = True  # if True, cosine anneal from LR to MIN_LR over MAX_ITER
@@ -115,11 +115,11 @@ BOX_FIELDS = 6              # cx, cy, w, h, θ, confidence
 #     python util/anchor_cluster.py
 # The training script will automatically load cached anchors if available.
 ANCHORS_AUTO_CLUSTER = True  # if True, load from cache; else use ANCHORS below
-ANCHORS = [
-    [(10, 13), (16, 30), (33, 23)],       # small  scale (stride 8)
-    [(30, 61), (62, 45), (59, 119)],      # medium scale (stride 16)
-    [(116, 90), (156, 198), (373, 326)],  # large  scale (stride 32)
-]
+# ANCHORS = [
+#     [(10, 13), (16, 30), (33, 23)],       # small  scale (stride 8)
+#     [(30, 61), (62, 45), (59, 119)],      # medium scale (stride 16)
+#     [(116, 90), (156, 198), (373, 326)],  # large  scale (stride 32)
+# ]
 
 # Strides for each detection scale
 STRIDES = [8, 16, 32]

@@ -69,32 +69,45 @@ class PFDAug:
 
     @staticmethod
     def _warp_image(image: np.ndarray, W: int, H: int, k: float) -> np.ndarray:
-        """Apply barrel distortion to the image via backward mapping.
+        """Apply barrel distortion to the image (backward mapping).
 
-        For every output pixel at radius r_u, solves k·r_d³ + r_d - r_u = 0
-        to find the source pixel (Newton's method).
+        The forward map follows the paper's radial model:
+
+            r_dst = r_src · (1 + k · r_src²)
+
+        where x and y are normalized independently by W/2 and H/2.
+        This means r = 1 lies on the middle of each image edge, while
+        the corners are at r = sqrt(2). We invert this mapping with
+        Newton's method so every output pixel samples the correct source
+        location.
+
+        For valid pixels we solve  k·r_src³ + r_src - r_dst = 0
+        via Newton's method.
         """
         cx, cy = W / 2.0, H / 2.0
-        scale = max(cx, cy)
+        scale_x = cx
+        scale_y = cy
 
         ys, xs = np.mgrid[0:H, 0:W].astype(np.float32)
-        xn = (xs - cx) / scale
-        yn = (ys - cy) / scale
-        r_u = np.sqrt(xn ** 2 + yn ** 2)
+        xn = (xs - cx) / scale_x
+        yn = (ys - cy) / scale_y
+        r_dst = np.sqrt(xn ** 2 + yn ** 2)
 
-        eps = 1e-8
-        valid = r_u > eps
-        r_d = r_u.copy()
-        for _ in range(5):
-            r2 = r_d ** 2
-            f = k * r_d * r2 + r_d - r_u
+        valid = r_dst > 1e-8
+        r_src = np.zeros_like(r_dst)
+        r_src[valid] = r_dst[valid]
+        for _ in range(10):
+            r2 = r_src * r_src
+            f = k * r_src * r2 + r_src - r_dst
             fprime = 3.0 * k * r2 + 1.0
-            r_d = np.where(valid, r_d - f / fprime, r_d)
+            delta = np.zeros_like(r_src)
+            np.divide(f, fprime, out=delta, where=valid & (np.abs(fprime) > 1e-8))
+            r_src[valid] -= delta[valid]
 
-        ratio = np.ones_like(r_u, dtype=np.float32)
-        ratio[valid] = r_d[valid] / r_u[valid]
-        xs_src = ratio * xn * scale + cx
-        ys_src = ratio * yn * scale + cy
+        ratio = np.zeros_like(r_dst)
+        ratio[valid] = r_src[valid] / r_dst[valid]
+        xs_src = ratio * xn * scale_x + cx
+        ys_src = ratio * yn * scale_y + cy
 
         return cv2.remap(image, xs_src.astype(np.float32), ys_src.astype(np.float32),
                          interpolation=cv2.INTER_LINEAR,
@@ -122,16 +135,17 @@ class PFDAug:
             R_rad = np.deg2rad(R)
             half_w, half_h = w / 2.0, h / 2.0
 
+            # ---- corner order fix: clockwise from top-left ----
             local_corners = np.array([
                 [-half_w, -half_h],
                 [ half_w, -half_h],
-                [-half_w,  half_h],
                 [ half_w,  half_h],
+                [-half_w,  half_h],
             ], dtype=np.float32)
 
             cos_a, sin_a = np.cos(R_rad), np.sin(R_rad)
             rot = np.array([[cos_a, -sin_a], [sin_a, cos_a]], dtype=np.float32)
-            rotated_corners = cx + local_corners @ rot.T
+            rotated_corners = local_corners @ rot.T + np.array([cx, cy])
 
             distorted_corners = np.empty_like(rotated_corners)
             for j in range(4):
@@ -157,104 +171,23 @@ class PFDAug:
 
     @staticmethod
     def _point_distortion(x: float, y: float, W: int, H: int, k: float):
-        """Distort a single point (Alg. 2) — same normalisation as _warp_image."""
-        cx, cy = W / 2.0, H / 2.0
-        scale = max(cx, cy)
+        """Distort a single point (Alg. 2) — barrel distortion: edges pushed outward.
 
-        xn = (x - cx) / scale
-        yn = (y - cy) / scale
+        The point warp uses the same axis-wise normalization as image warp.
+        """
+        cx, cy = W / 2.0, H / 2.0
+        scale_x = cx
+        scale_y = cy
+
+        xn = (x - cx) / scale_x
+        yn = (y - cy) / scale_y
         r = np.sqrt(xn * xn + yn * yn)
         theta = np.arctan2(yn, xn)
         r_dis = r * (1.0 + k * r * r)
 
-        x_dis = r_dis * np.cos(theta) * scale + cx
-        y_dis = r_dis * np.sin(theta) * scale + cy
+        x_dis = r_dis * np.cos(theta) * scale_x + cx
+        y_dis = r_dis * np.sin(theta) * scale_y + cy
 
         return np.float32(x_dis), np.float32(y_dis)
 
 
-# ===================================================================
-#  Self-test: synthetic grid → visualize distortion w/ box alignment
-# ===================================================================
-if __name__ == "__main__":
-    import os
-
-    W, H = 1920, 1080
-    k = 0.5
-    out_dir = "output/pfdaug_test"
-    os.makedirs(out_dir, exist_ok=True)
-
-    # ---- Build test image ----
-    img = np.full((H, W, 3), 64, dtype=np.uint8)
-    cx, cy = W // 2, H // 2
-    for r in range(100, 700, 100):
-        cv2.circle(img, (cx, cy), r, (255, 255, 255), 1)
-    cv2.circle(img, (cx, cy), 6, (0, 0, 255), -1)
-    cv2.line(img, (0, cy), (W, cy), (255, 255, 255), 1)
-    cv2.line(img, (cx, 0), (cx, H), (255, 255, 255), 1)
-    for deg in range(0, 180, 30):
-        a = np.deg2rad(deg)
-        cv2.line(img, (int(cx - 600 * np.cos(a)), int(cy - 600 * np.sin(a))),
-                 (int(cx + 600 * np.cos(a)), int(cy + 600 * np.sin(a))),
-                 (200, 200, 200), 1)
-
-    # ---- Test boxes ----
-    boxes = np.array([
-        [300, 540, 120, 60, 30],
-        [960, 540, 200, 100, 0],
-        [1600, 540, 100, 70, -45],
-    ], dtype=np.float32)
-
-    # ---- Draw original ----
-    img_orig = img.copy()
-    for (bx, by, bw, bh, bR) in boxes:
-        pts = cv2.boxPoints(((float(bx), float(by)), (float(bw), float(bh)), float(bR)))
-        cv2.drawContours(img_orig, [np.intp(pts)], 0, (0, 255, 0), 2)
-    cv2.imwrite(os.path.join(out_dir, "01_original.png"),
-                cv2.cvtColor(img_orig, cv2.COLOR_RGB2BGR))
-
-    # ---- Apply PFDAug ----
-    aug = PFDAug(k=k, p=1.0)
-    img_aug, boxes_aug = aug.forward(img, boxes, k)
-
-    # ---- Draw augmented ----
-    img_out = img_aug.copy()
-    for (bx, by, bw, bh, bR) in boxes_aug:
-        pts = cv2.boxPoints(((float(bx), float(by)), (float(bw), float(bh)), float(bR)))
-        cv2.drawContours(img_out, [np.intp(pts)], 0, (0, 255, 0), 2)
-    cv2.imwrite(os.path.join(out_dir, "02_augmented.png"),
-                cv2.cvtColor(img_out, cv2.COLOR_RGB2BGR))
-
-    # ---- Consistency check: forward-distort original corners, draw as dots ----
-    img_check = img_aug.copy()
-    for (bx, by, bw, bh, bR) in boxes:
-        half_w, half_h = bw / 2, bh / 2
-        a_rad = np.deg2rad(bR)
-        cos_a, sin_a = np.cos(a_rad), np.sin(a_rad)
-        corners = np.array([
-            [bx + (-half_w) * cos_a - (-half_h) * sin_a,
-             by + (-half_w) * sin_a + (-half_h) * cos_a],
-            [bx + ( half_w) * cos_a - (-half_h) * sin_a,
-             by + ( half_w) * sin_a + (-half_h) * cos_a],
-            [bx + ( half_w) * cos_a - ( half_h) * sin_a,
-             by + ( half_w) * sin_a + ( half_h) * cos_a],
-            [bx + (-half_w) * cos_a - ( half_h) * sin_a,
-             by + (-half_w) * sin_a + ( half_h) * cos_a],
-        ], dtype=np.float32)
-        for (cx, cy) in corners:
-            dx, dy = PFDAug._point_distortion(cx, cy, W, H, k)
-            cv2.circle(img_check, (int(dx), int(dy)), 4, (0, 0, 255), -1)
-    cv2.imwrite(os.path.join(out_dir, "03_dots.png"),
-                cv2.cvtColor(img_check, cv2.COLOR_RGB2BGR))
-
-    # ---- Print comparison ----
-    print(f"Image: {W}×{H}, k={k}")
-    for i, (orig, aug) in enumerate(zip(boxes, boxes_aug)):
-        err = np.sqrt((orig[0] - aug[0]) ** 2 + (orig[1] - aug[1]) ** 2)
-        print(f"  Box {i}:  [{orig[0]:6.0f} {orig[1]:6.0f} {orig[2]:6.0f} {orig[3]:6.0f} {orig[4]:6.0f}]"
-              f"  →  [{aug[0]:6.0f} {aug[1]:6.0f} {aug[2]:6.0f} {aug[3]:6.0f} {aug[4]:6.0f}]"
-              f"  Δcenter={err:.0f}px")
-    print(f"\nSaved to {out_dir}/")
-    print("  01_original  = before,  02_augmented = after")
-    print("  03_dots      = red dots = forward-distorted original corners")
-    print("  If box alignment is correct, green boxes should contain red dots.")
