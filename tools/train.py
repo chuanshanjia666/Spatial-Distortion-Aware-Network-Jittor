@@ -139,7 +139,7 @@ def main():
 
     # AMP mixed precision (PyTorch only)
     if BACKEND == "pytorch":
-        scaler = amp.GradScaler()
+        scaler = torch.amp.GradScaler('cuda')
     else:
         scaler = None
 
