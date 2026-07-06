@@ -28,16 +28,25 @@ def _mse_loss(pred, target, reduction='none'):
     """MSE loss with optional reduction."""
     if BACKEND == "pytorch":
         return nn_module.MSELoss(reduction=reduction)(pred, target)
-    # Jittor: use nn.mse_loss
-    return nn.mse_loss(pred, target, reduction=reduction)
+    # Jittor: compute manually since mse_loss doesn't support reduction='none'
+    diff = pred - target
+    sqr = diff * diff
+    if reduction == 'none':
+        return sqr
+    elif reduction == 'mean':
+        return sqr.mean()
+    else:  # 'sum'
+        return sqr.sum()
 
 
 def _bce_loss(pred, target):
     """Binary cross entropy with logits, no reduction."""
     if BACKEND == "pytorch":
         return nn_module.BCEWithLogitsLoss(reduction='none')(pred, target)
-    # Jittor: use nn.binary_cross_entropy_with_logits with reduction='none'
-    return nn.binary_cross_entropy_with_logits(pred, target, reduction='none')
+    # Jittor: compute manually since bce_with_logits doesn't support reduction='none'
+    max_val = jt.clamp(-pred, min_v=0)
+    loss = (1 - target) * pred + max_val + ((-max_val).exp() + (-pred - max_val).exp()).log()
+    return loss
 
 
 def _wh_iou(bw, bh, aws, ahs):
@@ -158,7 +167,11 @@ class SDALoss(nn.Module):
                         anchor_ws = self.anchors[s_idx, :, 0] / stride
                         anchor_hs = self.anchors[s_idx, :, 1] / stride
                     ious = _wh_iou(bw, bh, anchor_ws, anchor_hs)
-                    best_a = int(ious.argmax().item())
+                    if BACKEND == "pytorch":
+                        best_a = int(ious.argmax().item())
+                    else:
+                        # Jittor argmax returns tuple (indices, values), get first element
+                        best_a = int(ious.argmax(dim=0)[0].item())
 
                     # Fill target
                     tgt[b, best_a, 0, gy, gx] = cx_g - gx                  # tx

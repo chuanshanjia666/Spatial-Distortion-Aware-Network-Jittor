@@ -11,9 +11,9 @@ from config import (
 )
 
 # 测试相关配置
-TEST_CHECKPOINT = None  # 权重文件路径，如 "output/sdanet_epoch050.pth"
+TEST_CHECKPOINT = "output/latest.pth"  # 权重文件路径，如 "output/sdanet_epoch050.pth"
 VIS_DIR = "output/vis_results"  # 可视化结果保存目录
-NUM_VIS = 16  # 可视化图片数量（设为0则不可视化）
+NUM_VIS = 32  # 可视化图片数量（设为0则不可视化）
 
 if BACKEND == "pytorch":
     import torch

@@ -23,8 +23,9 @@ def rotated_iou_single(box1, box2):
     Returns:
         float IoU in [0, 1].
     """
-    rect1 = ((box1[0], box1[1]), (box1[2], box1[3]), box1[4])
-    rect2 = ((box2[0], box2[1]), (box2[2], box2[3]), box2[4])
+    # 确保是 float 类型，OpenCV 5.0+ 要求
+    rect1 = ((float(box1[0]), float(box1[1])), (float(box1[2]), float(box1[3])), float(box1[4]))
+    rect2 = ((float(box2[0]), float(box2[1])), (float(box2[2]), float(box2[3])), float(box2[4]))
     # Only succeeds if boxes actually intersect
     try:
         inter = _rotated_rect_intersection_area(rect1, rect2)
@@ -298,7 +299,8 @@ def cxcywhR_to_corners(boxes: np.ndarray) -> np.ndarray:
     N = boxes.shape[0]
     corners = np.zeros((N, 4, 2), dtype=np.float32)
     for i, (cx, cy, w, h, R) in enumerate(boxes):
-        rect = ((cx, cy), (w, h), R)
+        # 确保是 float 类型，OpenCV 5.0+ 要求
+        rect = ((float(cx), float(cy)), (float(w), float(h)), float(R))
         corners[i] = cv2.boxPoints(rect)
     return corners
 
