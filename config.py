@@ -1,13 +1,4 @@
-"""
-SDANet configuration.
-
-All hyperparameters for the Spatial-Distortion-Aware Network.
-"""
-
-# ---------------------------------------------------------------------------
-# Backend & device
-# ---------------------------------------------------------------------------
-# BACKEND = "pytorch"       # "pytorch" | "jittor"
+# BACKEND = "pytorch"
 BACKEND = "pytorch"
 DEVICE = "cuda" if BACKEND == "pytorch" else "cuda"
 
@@ -15,26 +6,9 @@ DEVICE = "cuda" if BACKEND == "pytorch" else "cuda"
 # Dataset
 # ---------------------------------------------------------------------------
 NUM_WORKERS = 4
-
-# Dataset configuration: each entry uses ``preset[split]`` syntax.
-#   preset   → one of habbof, cepdof, wepdtof, fisheye8k (see DATASET_PRESETS)
-#   split    → "all", "train", "val", or "test" (maps to annotations/<split>.json)
-#
-# PFDAug is applied to TRAIN_DATASETS only; val/test datasets always use raw images.
-#
-# Examples:
-#   TRAIN_DATASETS = ["habbof[all]"]                          # habbof all→train, aug on
-#   VAL_DATASETS   = ["cepdof[all]"]                          # cepdof all→val,   aug off
-#   TEST_DATASETS  = ["wepdtof[test]"]                        # wepdtof test→test, aug off
-#
-#   # Multi-dataset training with different val splits:
-#   TRAIN_DATASETS = ["habbof[train]", "cepdof[train]"]
-#   VAL_DATASETS   = ["habbof[val]",   "cepdof[val]"]
-#   TEST_DATASETS  = ["wepdtof[test]", "fisheye8k[test]"]
-
 TRAIN_DATASETS = ["habbof[train]"]
 VAL_DATASETS   = ["habbof[val]"]
-TEST_DATASETS  = ["habbof[test]"]                       # empty → skip test evaluation
+TEST_DATASETS  = ["habbof[test]"]
 
 # ---------------------------------------------------------------------------
 # PFDAug — online distortion augmentation (paper Section IV)
@@ -42,17 +16,17 @@ TEST_DATASETS  = ["habbof[test]"]                       # empty → skip test ev
 # Applied only to training split; val/test use raw images.
 PFDAUG_ENABLED = True
 PFDAUG_K = (0.1,0.2,0.3,0.35,0.4,0.45,0.48,0.49,0.5)   # distortion coefficient tuple, randomly sampled per image
-PFDAUG_P = 0.5             # probability per sample
+PFDAUG_P = 0.2             # probability per sample
 
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
 BATCH_SIZE = 64
-INPUT_SIZE = 608            # input image size (square: 608×608)
+INPUT_SIZE = 416            # input image size (square: 608×608)
 
 # Gradient accumulation: when enabled, use smaller per-step batches
 # and replace BatchNorm with GroupNorm (BN is unstable with small micro-batches).
-USE_ACCUMULATION_STEP = False
+USE_ACCUMULATION_STEP = True
 STEP_BATCH_SIZE = 8 if USE_ACCUMULATION_STEP else BATCH_SIZE
 GN_NUM_GROUPS = 32          # GroupNorm groups (auto-clamped to divisor of channels)
 

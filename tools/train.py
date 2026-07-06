@@ -173,15 +173,19 @@ def main():
         epoch += 1
         model.train()
         epoch_loss = 0.0
+        epoch_updates = 0
         optimizer.zero_grad()
+        train_len = len(train_loader)
+        tail_chunk = train_len % accumulation_steps
+        if tail_chunk == 0:
+            tail_chunk = accumulation_steps
+        chunk_loss = 0.0
+        chunk_size = accumulation_steps
+        chunk_count = 0
 
         for batch_idx, (images, boxes_list) in enumerate(train_loader):
             if global_step >= MAX_ITER:
                 break
-            global_step += 1
-
-            # LR schedule
-            lr_scheduler.step(global_step)
 
             if DEVICE == "cuda":
                 if BACKEND == "pytorch":
@@ -198,14 +202,26 @@ def main():
                 preds = model(images)
                 loss = criterion(preds, boxes_list, images)
 
-            loss = loss / accumulation_steps
+            raw_loss = loss.item() if BACKEND == "pytorch" else loss.numpy()[0]
+
+            if tail_chunk != accumulation_steps and batch_idx >= train_len - tail_chunk:
+                chunk_size = tail_chunk
+            else:
+                chunk_size = accumulation_steps
+
+            loss = loss / chunk_size
 
             if BACKEND == "pytorch":
                 scaler.scale(loss).backward()
             else:
                 optimizer.backward(loss)
 
-            if (batch_idx + 1) % accumulation_steps == 0:
+            chunk_count += 1
+            chunk_loss += raw_loss
+
+            if chunk_count == chunk_size:
+                global_step += 1
+                lr_scheduler.step(global_step)
                 if BACKEND == "pytorch":
                     scaler.step(optimizer)
                     scaler.update()
@@ -213,16 +229,42 @@ def main():
                     optimizer.step()
                 optimizer.zero_grad()
 
-            batch_loss = loss.item() if BACKEND == "pytorch" else loss.numpy()[0]
-            epoch_loss += batch_loss * accumulation_steps
+                update_loss = chunk_loss / chunk_count
+                epoch_loss += update_loss
+                epoch_updates += 1
 
-            if batch_idx % 20 == 0:
-                cur_lr = optimizer.param_groups[0]['lr']
-                print(f"  epoch {epoch:3d} | iter {global_step:5d}/{MAX_ITER} "
-                      f"| loss {batch_loss * accumulation_steps:.4f} "
-                      f"| lr {cur_lr:.6f}")
+                if global_step == 1 or global_step % 20 == 0:
+                    cur_lr = optimizer.param_groups[0]['lr']
+                    print(f"  epoch {epoch:3d} | iter {global_step:5d}/{MAX_ITER} "
+                          f"| loss {update_loss:.4f} "
+                          f"| lr {cur_lr:.6f}")
 
-        avg_loss = epoch_loss / len(train_loader)
+                chunk_loss = 0.0
+                chunk_count = 0
+
+        if chunk_count > 0:
+            global_step += 1
+            lr_scheduler.step(global_step)
+            if BACKEND == "pytorch":
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+            optimizer.zero_grad()
+
+            update_loss = chunk_loss / chunk_count
+            epoch_loss += update_loss
+            epoch_updates += 1
+
+            cur_lr = optimizer.param_groups[0]['lr']
+            print(f"  epoch {epoch:3d} | iter {global_step:5d}/{MAX_ITER} "
+                  f"| loss {update_loss:.4f} "
+                  f"| lr {cur_lr:.6f}")
+
+        if epoch_updates > 0:
+            avg_loss = epoch_loss / epoch_updates
+        else:
+            avg_loss = 0.0
         print(f"--- epoch {epoch} done | avg_loss={avg_loss:.4f} | step={global_step}/{MAX_ITER} ---")
 
         # ---- Save checkpoint ----
