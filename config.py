@@ -52,7 +52,7 @@ INPUT_SIZE = 416            # input image size (square: 640×640)
 
 # Gradient accumulation: when enabled, use smaller per-step batches
 # and replace BatchNorm with GroupNorm (BN is unstable with small micro-batches).
-USE_ACCUMULATION_STEP = True
+USE_ACCUMULATION_STEP = False
 STEP_BATCH_SIZE = 8 if USE_ACCUMULATION_STEP else BATCH_SIZE
 GN_NUM_GROUPS = 32          # GroupNorm groups (auto-clamped to divisor of channels)
 

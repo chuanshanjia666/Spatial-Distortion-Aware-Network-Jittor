@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
     BACKEND, DEVICE, NUM_WORKERS, BATCH_SIZE, INPUT_SIZE,
     STEP_BATCH_SIZE, TRAIN_DATASETS, VAL_DATASETS, TEST_DATASETS,
-    USE_ACCUMULATION_STEP, EPOCHS, STRIDES,
+    USE_ACCUMULATION_STEP, EPOCHS, STRIDES, CONF_THRESH, NMS_IOU_THRESH,
     RESUME, OUTPUT_DIR,
 )
 
@@ -34,7 +34,7 @@ else:
 from util import (
     compute_map, compute_map_coco, SDALoss,
     decode_predictions, collate_fn, build_datasets, build_model,
-    build_optimizer, build_lr_scheduler,
+    build_optimizer, build_lr_scheduler, oriented_nms,
 )
 
 
@@ -258,9 +258,18 @@ def main():
                     preds = model(images)
                     val_loss += criterion(preds, boxes_list, images)
 
-                # Decode predictions for mAP
-                dets = decode_predictions(preds)
-                all_preds.extend(dets)
+                # Decode predictions for mAP (with NMS)
+                dets = decode_predictions(preds, conf_thresh=CONF_THRESH)
+                batch_preds = []
+                for dets_per_img in dets:
+                    pred_boxes, pred_scores, pred_labels = dets_per_img
+                    if len(pred_boxes) > 0:
+                        keep = oriented_nms(pred_boxes, pred_scores, iou_thresh=NMS_IOU_THRESH)
+                        pred_boxes = pred_boxes[keep]
+                        pred_scores = pred_scores[keep]
+                        pred_labels = pred_labels[keep]
+                    batch_preds.append((pred_boxes, pred_scores, pred_labels))
+                all_preds.extend(batch_preds)
                 gts = []
                 for item in boxes_list:
                     # item is (boxes, labels) from collate_fn
