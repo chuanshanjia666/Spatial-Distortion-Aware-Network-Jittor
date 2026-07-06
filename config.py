@@ -48,7 +48,7 @@ PFDAUG_P = 0.5             # probability per sample
 # Training
 # ---------------------------------------------------------------------------
 BATCH_SIZE = 64
-INPUT_SIZE = 416            # input image size (square: 640×640)
+INPUT_SIZE = 608            # input image size (square: 608×608)
 
 # Gradient accumulation: when enabled, use smaller per-step batches
 # and replace BatchNorm with GroupNorm (BN is unstable with small micro-batches).
@@ -63,7 +63,6 @@ MOMENTUM = 0.9
 WEIGHT_DECAY = 0.0001
 MAX_ITER = 6000             # fine-tuning iterations on fisheye datasets
 WARMUP_ITERS = 20
-EPOCHS = 50                 # number of training epochs
 RESUME = None               # path to checkpoint for resuming (None = train from scratch)
 OUTPUT_DIR = "output"   # directory for saving checkpoints
 

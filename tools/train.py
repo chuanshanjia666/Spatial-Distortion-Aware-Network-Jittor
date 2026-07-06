@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
     BACKEND, DEVICE, NUM_WORKERS, BATCH_SIZE, INPUT_SIZE,
     STEP_BATCH_SIZE, TRAIN_DATASETS, VAL_DATASETS, TEST_DATASETS,
-    USE_ACCUMULATION_STEP, EPOCHS, STRIDES, CONF_THRESH, NMS_IOU_THRESH,
+    USE_ACCUMULATION_STEP, MAX_ITER, STRIDES, CONF_THRESH, NMS_IOU_THRESH,
     RESUME, OUTPUT_DIR,
 )
 
@@ -101,7 +101,7 @@ def main():
     print(f"Train datasets: {TRAIN_DATASETS}")
     print(f"Val datasets:   {VAL_DATASETS}")
     print(f"Input size: {INPUT_SIZE}, Step batch: {STEP_BATCH_SIZE}, "
-          f"Epochs: {EPOCHS}")
+            f"Max iters: {MAX_ITER}")
 
     # ---- Datasets ----
     train_ds, val_ds, resolved_anchors = build_datasets(TRAIN_DATASETS, VAL_DATASETS)
@@ -143,8 +143,7 @@ def main():
     else:
         scaler = None
 
-    max_iters = len(train_loader) * EPOCHS
-    lr_scheduler = build_lr_scheduler(optimizer, max_iters)
+    lr_scheduler = build_lr_scheduler(optimizer, MAX_ITER)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -169,12 +168,16 @@ def main():
         print(f"Resumed from {RESUME} (epoch {start_epoch}, step {global_step})")
 
     # ---- Training loop ----
-    for epoch in range(start_epoch + 1, EPOCHS + 1):
+    epoch = start_epoch
+    while global_step < MAX_ITER:
+        epoch += 1
         model.train()
         epoch_loss = 0.0
         optimizer.zero_grad()
 
         for batch_idx, (images, boxes_list) in enumerate(train_loader):
+            if global_step >= MAX_ITER:
+                break
             global_step += 1
 
             # LR schedule
@@ -215,12 +218,12 @@ def main():
 
             if batch_idx % 20 == 0:
                 cur_lr = optimizer.param_groups[0]['lr']
-                print(f"  epoch {epoch:3d} | iter {batch_idx:4d}/{len(train_loader)} "
+                print(f"  epoch {epoch:3d} | iter {global_step:5d}/{MAX_ITER} "
                       f"| loss {batch_loss * accumulation_steps:.4f} "
                       f"| lr {cur_lr:.6f}")
 
         avg_loss = epoch_loss / len(train_loader)
-        print(f"--- epoch {epoch} done | avg_loss={avg_loss:.4f} ---")
+        print(f"--- epoch {epoch} done | avg_loss={avg_loss:.4f} | step={global_step}/{MAX_ITER} ---")
 
         # ---- Save checkpoint ----
         ckpt = {
@@ -230,7 +233,7 @@ def main():
             'scaler_state': scaler.state_dict() if scaler is not None else None,
             'global_step': global_step,
         }
-        ckpt_path = os.path.join(OUTPUT_DIR, f"sdanet_epoch{epoch:03d}.pth")
+        ckpt_path = os.path.join(OUTPUT_DIR, f"sdanet_iter{global_step:06d}.pth")
         if BACKEND == "pytorch":
             torch.save(ckpt, ckpt_path)
         else:
