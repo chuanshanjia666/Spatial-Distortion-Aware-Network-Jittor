@@ -196,3 +196,22 @@ if __name__ == "__main__":
         assert tuple(p.shape) == (1, A * F, H_s, H_s), (
             f"Unexpected shape: {tuple(p.shape)} vs {(1, A*F, H_s, H_s)}")
     print("\nAll output shapes correct")
+
+    # Export to ONNX for architecture visualization
+    onnx_path = os.path.join(os.path.dirname(__file__), "..", "sdanet.onnx")
+    if BACKEND == "pytorch":
+        torch.onnx.export(
+            model,
+            dummy,
+            onnx_path,
+            export_params=True,
+            opset_version=21,
+            do_constant_folding=True,
+            input_names=["input"],
+            output_names=[f"output_scale{i}" for i in range(len(preds))],
+            dynamic_axes={
+                "input": {0: "batch_size"},
+                **{f"output_scale{i}": {0: "batch_size"} for i in range(len(preds))},
+            },
+        )
+        print(f"\nONNX exported to: {onnx_path}")

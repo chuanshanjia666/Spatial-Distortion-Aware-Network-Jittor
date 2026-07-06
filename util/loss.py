@@ -28,26 +28,16 @@ def _mse_loss(pred, target, reduction='none'):
     """MSE loss with optional reduction."""
     if BACKEND == "pytorch":
         return nn_module.MSELoss(reduction=reduction)(pred, target)
-    # Jittor: manual computation
-    diff = (pred - target) ** 2
-    if reduction == 'mean':
-        return diff.mean()
-    elif reduction == 'sum':
-        return diff.sum()
-    return diff
+    # Jittor: use nn.mse_loss
+    return nn.mse_loss(pred, target, reduction=reduction)
 
 
 def _bce_loss(pred, target):
     """Binary cross entropy with logits, no reduction."""
     if BACKEND == "pytorch":
         return nn_module.BCEWithLogitsLoss(reduction='none')(pred, target)
-    # Jittor: manual BCE
-    pred = pred.float32()
-    target = target.float32()
-    # sigmoid_bce_loss = -[y*log(sigmoid(x)) + (1-y)*log(1-sigmoid(x))]
-    sig = 1.0 / (1.0 + jt.exp(-pred))
-    loss = -(target * jt.safe_log(sig + 1e-8) + (1 - target) * jt.safe_log(1 - sig + 1e-8))
-    return loss
+    # Jittor: use nn.binary_cross_entropy_with_logits with reduction='none'
+    return nn.binary_cross_entropy_with_logits(pred, target, reduction='none')
 
 
 def _wh_iou(bw, bh, aws, ahs):
