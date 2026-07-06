@@ -206,7 +206,7 @@ def main():
 
     if resume_path and os.path.isfile(resume_path):
         if BACKEND == "pytorch":
-            ckpt = torch.load(resume_path, map_location='cpu', weights_only=True)
+            ckpt = torch.load(resume_path, map_location='cpu', weights_only=False)
         else:
             ckpt = jt.load(resume_path)
         model.load_state_dict(ckpt['model_state'])
@@ -366,7 +366,7 @@ def main():
                         val_loss += criterion(preds, boxes_list, images)
 
                 # Decode predictions for mAP (with NMS)
-                dets = decode_predictions(preds, conf_thresh=CONF_THRESH)
+                dets = decode_predictions(preds, conf_thresh=CONF_THRESH, anchors=resolved_anchors)
                 batch_preds = []
                 for dets_per_img in dets:
                     pred_boxes, pred_scores, pred_labels = dets_per_img

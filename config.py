@@ -7,7 +7,7 @@ DEVICE = "cuda" if BACKEND == "pytorch" else "cuda"
 # ---------------------------------------------------------------------------
 NUM_WORKERS = 4
 TRAIN_DATASETS = ["habbof[train]"]
-VAL_DATASETS   = []
+VAL_DATASETS   = ["habbof[val]"]
 TEST_DATASETS  = ["habbof[test]"]
 
 # ---------------------------------------------------------------------------
@@ -27,7 +27,7 @@ INPUT_SIZE = 416            # input image size (square: 608×608)
 # Gradient accumulation: when enabled, use smaller per-step batches
 # and replace BatchNorm with GroupNorm (BN is unstable with small micro-batches).
 USE_ACCUMULATION_STEP = True
-STEP_BATCH_SIZE = 4 if USE_ACCUMULATION_STEP else BATCH_SIZE
+STEP_BATCH_SIZE = 8 if USE_ACCUMULATION_STEP else BATCH_SIZE
 GN_NUM_GROUPS = 32          # GroupNorm groups (auto-clamped to divisor of channels)
 
 # Mixed precision (FP16) — reduces GPU memory, speeds up training
@@ -116,6 +116,6 @@ IOU_THRESH = 0.5            # AP@50
 # ---------------------------------------------------------------------------
 # Inference
 # ---------------------------------------------------------------------------
-CONF_THRESH = 0.1
+CONF_THRESH = 0.3
 NMS_IOU_THRESH = 0.45
 MAX_DETECTIONS = 300

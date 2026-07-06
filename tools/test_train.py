@@ -1,16 +1,3 @@
-#!/usr/bin/env python3
-"""
-End-to-end smoke test for SDANet training pipeline.
-
-Runs 15 epochs on a tiny subset (50 images) to verify:
-  - Dataset → DataLoader → Model → Loss → mAP
-  - Loss decreases over time
-  - mAP is not stuck at 0
-
-Usage:
-    python tools/test_train.py
-"""
-
 import os
 import sys
 import time
@@ -52,7 +39,7 @@ def _extract_targets(boxes_list):
     return targets
 
 
-def _validate(model, loader, conf_thresh=0.3, max_per_image=500):
+def _validate(model, loader, anchors, conf_thresh=0.3, max_per_image=500):
     """Run validation pass → return (all_preds, all_targets)."""
     model.eval()
     preds, targets = [], []
@@ -60,7 +47,7 @@ def _validate(model, loader, conf_thresh=0.3, max_per_image=500):
         for images, boxes_list in loader:
             if DEVICE == "cuda":
                 images = images.cuda()
-            dets = decode_predictions(model(images), conf_thresh=conf_thresh)
+            dets = decode_predictions(model(images), conf_thresh=conf_thresh, anchors=anchors)
             # Cap per-image detections (top-k by score) to avoid O(n²) metric explosion
             capped = []
             for boxes, scores, labels in dets:
@@ -93,7 +80,7 @@ def _val_metrics(preds, targets, class_names, label=""):
     return False
 
 
-def _visualize(model, loader, vis_dir, max_vis=8):
+def _visualize(model, loader, anchors, vis_dir, max_vis=8):
     """Draw pred (red) and GT (green) boxes on first N images."""
     os.makedirs(vis_dir, exist_ok=True)
     model.eval()
@@ -102,7 +89,7 @@ def _visualize(model, loader, vis_dir, max_vis=8):
         for images, boxes_list in loader:
             if DEVICE == "cuda":
                 images = images.cuda()
-            dets = decode_predictions(model(images), conf_thresh=0.1)
+            dets = decode_predictions(model(images), conf_thresh=0.1, anchors=anchors)
             for i in range(images.shape[0]):
                 if count >= max_vis:
                     return
@@ -208,7 +195,7 @@ def main():
 
         if epoch % 5 == 0 or epoch == 1:
             t_val = time.time()
-            preds, targets = _validate(model, loader)
+            preds, targets = _validate(model, loader, resolved_anchors)
             val_t = time.time() - t_val
             print(f"  epoch {epoch:3d}: loss={avg_loss:.1f}  "
                   f"train={t:.1f}s  val={val_t:.1f}s  "
@@ -225,8 +212,8 @@ def main():
     print("\n--- Final Validation & Visualization ---")
     vis_dir = "output/vis"
 
-    all_preds, all_targets = _validate(model, loader)
-    _visualize(model, loader, vis_dir, max_vis=8)
+    all_preds, all_targets = _validate(model, loader, resolved_anchors)
+    _visualize(model, loader, resolved_anchors, vis_dir, max_vis=8)
     print(f"  Saved images to {vis_dir}/")
 
     failed = _val_metrics(all_preds, all_targets, class_names, label="final")

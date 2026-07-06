@@ -6,7 +6,7 @@ import cv2
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
-    BACKEND, DEVICE, TEST_DATASETS, OUTPUT_DIR,
+    BACKEND, DEVICE, TEST_DATASETS, OUTPUT_DIR, INPUT_SIZE,
     CONF_THRESH, NMS_IOU_THRESH, IOU_THRESH,
 )
 
@@ -24,18 +24,41 @@ from util import (
     decode_predictions, build_datasets, build_model, oriented_nms,
     compute_map, compute_map_coco,
 )
+from util.anchor_cluster import load_or_cluster_anchors
 
 
 def find_latest_checkpoint():
-    """自动查找最新的训练权重"""
+    """自动查找最新的训练权重
+
+    优先级：
+        1. ``latest.pth`` — train.py 每次保存时同步更新的快捷入口。
+        2. 扫描 ``sdanet_iter*.pth``，取 iter 号最大的。
+    """
     if not os.path.exists(OUTPUT_DIR):
         return None
-    checkpoints = [f for f in os.listdir(OUTPUT_DIR) if f.endswith('.pth')]
+
+    # 优先：latest.pth
+    latest_path = os.path.join(OUTPUT_DIR, "latest.pth")
+    if os.path.isfile(latest_path):
+        return latest_path
+
+    # 回退：扫描 iter 最大的 sdanet_iterXXXXXX.pth
+    checkpoints = [f for f in os.listdir(OUTPUT_DIR) if f.startswith("sdanet_iter") and f.endswith('.pth')]
     if not checkpoints:
         return None
-    # 按epoch排序
-    checkpoints.sort(key=lambda x: int(x.split('epoch')[1].split('.')[0]) if 'epoch' in x else 0)
-    return os.path.join(OUTPUT_DIR, checkpoints[-1])
+    best_iter = -1
+    best_f = None
+    for f in checkpoints:
+        try:
+            it = int(f.replace("sdanet_iter", "").replace(".pth", ""))
+        except ValueError:
+            continue
+        if it > best_iter:
+            best_iter = it
+            best_f = f
+    if best_f:
+        return os.path.join(OUTPUT_DIR, best_f)
+    return None
 
 
 def load_checkpoint(checkpoint_path, model):
@@ -163,6 +186,10 @@ def main():
     model = load_checkpoint(checkpoint_path, model)
     model.eval()
 
+    # 加载聚类锚框（与训练时一致）
+    resolved_anchors = load_or_cluster_anchors(
+        TEST_DATASETS, num_clusters=9, input_size=INPUT_SIZE)
+
     # 移动到设备
     if DEVICE == "cuda":
         if BACKEND == "pytorch":
@@ -204,8 +231,8 @@ def main():
             input_tensor = jt.array(img_np).unsqueeze(0)
             preds = model(input_tensor)
 
-        # 解码预测
-        dets = decode_predictions(preds, conf_thresh=CONF_THRESH)
+        # 解码预测（使用聚类锚框，与训练时一致）
+        dets = decode_predictions(preds, conf_thresh=CONF_THRESH, anchors=resolved_anchors)
         pred_boxes, pred_scores, pred_labels = dets[0]
 
         # NMS

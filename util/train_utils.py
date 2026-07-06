@@ -24,12 +24,15 @@ else:
 #  Prediction decoder
 # ===================================================================
 
-def decode_predictions(predictions, conf_thresh=0.3):
+def decode_predictions(predictions, conf_thresh=0.3, anchors=None):
     """Decode YOLO-style outputs → per-image (boxes, scores, labels) — vectorised.
 
     Args:
         predictions: list of 3 tensors (B, A*6, Hs, Ws).
         conf_thresh: confidence threshold for filtering.
+        anchors:     optional override for anchors, same shape as config.ANCHORS
+                     (list of 3 lists, each with A (w,h) pairs).  If None, uses
+                     config.ANCHORS.
 
     Returns:
         List of (boxes, scores, labels) per batch item.
@@ -37,13 +40,14 @@ def decode_predictions(predictions, conf_thresh=0.3):
         scores: (N,)   float32.
         labels: (N,)   int64.
     """
+    _anchors = anchors if anchors is not None else ANCHORS
     B = predictions[0].shape[0]
     all_dets = []
 
     for b in range(B):
         img_boxes, img_scores, img_labels = [], [], []
         for s_idx, (pred, stride) in enumerate(zip(predictions, STRIDES)):
-            A = len(ANCHORS[s_idx])
+            A = len(_anchors[s_idx])
             _, _, Hs, Ws = pred.shape
 
             # (A, 6, H, W) → numpy, one image
@@ -69,8 +73,8 @@ def decode_predictions(predictions, conf_thresh=0.3):
 
             scores_k = obj[a_idx, gy, gx]
 
-            aw = np.array([ANCHORS[s_idx][a][0] for a in a_idx], dtype=np.float32)
-            ah = np.array([ANCHORS[s_idx][a][1] for a in a_idx], dtype=np.float32)
+            aw = np.array([_anchors[s_idx][a][0] for a in a_idx], dtype=np.float32)
+            ah = np.array([_anchors[s_idx][a][1] for a in a_idx], dtype=np.float32)
 
             cx = (gx.astype(np.float32) + tx) * stride
             cy = (gy.astype(np.float32) + ty) * stride
