@@ -1,5 +1,5 @@
-# BACKEND = "pytorch"
 BACKEND = "pytorch"
+# BACKEND = "jittor"
 DEVICE = "cuda" if BACKEND == "pytorch" else "cuda"
 
 # ---------------------------------------------------------------------------
@@ -7,7 +7,7 @@ DEVICE = "cuda" if BACKEND == "pytorch" else "cuda"
 # ---------------------------------------------------------------------------
 NUM_WORKERS = 4
 TRAIN_DATASETS = ["habbof[train]"]
-VAL_DATASETS   = ["habbof[val]"]
+VAL_DATASETS   = []
 TEST_DATASETS  = ["habbof[test]"]
 
 # ---------------------------------------------------------------------------
@@ -27,8 +27,15 @@ INPUT_SIZE = 416            # input image size (square: 608×608)
 # Gradient accumulation: when enabled, use smaller per-step batches
 # and replace BatchNorm with GroupNorm (BN is unstable with small micro-batches).
 USE_ACCUMULATION_STEP = True
-STEP_BATCH_SIZE = 8 if USE_ACCUMULATION_STEP else BATCH_SIZE
+STEP_BATCH_SIZE = 4 if USE_ACCUMULATION_STEP else BATCH_SIZE
 GN_NUM_GROUPS = 32          # GroupNorm groups (auto-clamped to divisor of channels)
+
+# Mixed precision (FP16) — reduces GPU memory, speeds up training
+# PyTorch: torch.cuda.amp.GradScaler + autocast (FP32 master weights + FP16 compute)
+# Jittor 1.x: DOES NOT support AMP-style mixed precision. model.float16()
+# and flag_scope(amp_reg) don't provide FP32 master weights, causing gradient
+# overflow / dtype mismatch.  Use FP32 only unless on Jittor 2.x or PyTorch.
+USE_FP16 = True
 
 LOAD_FROM_PRETRAIN = True
 
@@ -37,8 +44,9 @@ MOMENTUM = 0.9
 WEIGHT_DECAY = 0.0001
 MAX_ITER = 6000             # fine-tuning iterations on fisheye datasets
 WARMUP_ITERS = 20
-RESUME = None               # path to checkpoint for resuming (None = train from scratch)
-OUTPUT_DIR = "output"   # directory for saving checkpoints
+RESUME = None               # explicit checkpoint path (takes priority over AUTO_RESUME)
+AUTO_RESUME = True          # if True and RESUME is None, auto-load latest checkpoint from OUTPUT_DIR
+OUTPUT_DIR = "output"       # directory for saving checkpoints
 
 # Cosine annealing LR scheduler
 USE_COSINE_SCHEDULER = True  # if True, cosine anneal from LR to MIN_LR over MAX_ITER
@@ -108,6 +116,6 @@ IOU_THRESH = 0.5            # AP@50
 # ---------------------------------------------------------------------------
 # Inference
 # ---------------------------------------------------------------------------
-CONF_THRESH = 0.3
+CONF_THRESH = 0.1
 NMS_IOU_THRESH = 0.45
 MAX_DETECTIONS = 300

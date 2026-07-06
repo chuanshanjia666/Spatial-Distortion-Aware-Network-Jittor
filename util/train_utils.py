@@ -18,7 +18,7 @@ if BACKEND == "pytorch":
 else:
     import jittor as jt
     import jittor.nn as nn
-    import jittor.nn.functional as F
+    # Jittor 没有 nn.functional，直接使用 jittor.nn 中的函数
 
 # ===================================================================
 #  Prediction decoder
@@ -115,8 +115,13 @@ def resize_image_and_boxes(image, boxes, target_size):
         (image, boxes) — resized.
     """
     _, H, W = image.shape
-    image = F.interpolate(image.unsqueeze(0), size=(target_size, target_size),
-                          mode='bilinear', align_corners=False).squeeze(0)
+    if BACKEND == "pytorch":
+        import torch.nn.functional as _F
+        image = _F.interpolate(image.unsqueeze(0), size=(target_size, target_size),
+                              mode='bilinear', align_corners=False).squeeze(0)
+    else:
+        image = nn.interpolate(image.unsqueeze(0), size=(target_size, target_size),
+                              mode='bilinear', align_corners=False).squeeze(0)
     if boxes.shape[0] > 0:
         sx, sy = target_size / W, target_size / H
         boxes = boxes.clone()
@@ -372,4 +377,4 @@ class _JittorScheduler:
 if BACKEND == "pytorch":
     __all__ = ['torch', 'nn', 'F']
 else:
-    __all__ = ['jt', 'nn', 'F']
+    __all__ = ['jt', 'nn']  # Jittor 没有 nn.functional

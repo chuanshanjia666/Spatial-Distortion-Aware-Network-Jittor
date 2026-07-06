@@ -18,9 +18,36 @@ from config import (
 if BACKEND == "pytorch":
     import torch
     import torch.nn as nn
+    import torch.nn as nn_module
 else:
     import jittor as jt
     import jittor.nn as nn
+
+
+def _mse_loss(pred, target, reduction='none'):
+    """MSE loss with optional reduction."""
+    if BACKEND == "pytorch":
+        return nn_module.MSELoss(reduction=reduction)(pred, target)
+    # Jittor: manual computation
+    diff = (pred - target) ** 2
+    if reduction == 'mean':
+        return diff.mean()
+    elif reduction == 'sum':
+        return diff.sum()
+    return diff
+
+
+def _bce_loss(pred, target):
+    """Binary cross entropy with logits, no reduction."""
+    if BACKEND == "pytorch":
+        return nn_module.BCEWithLogitsLoss(reduction='none')(pred, target)
+    # Jittor: manual BCE
+    pred = pred.float32()
+    target = target.float32()
+    # sigmoid_bce_loss = -[y*log(sigmoid(x)) + (1-y)*log(1-sigmoid(x))]
+    sig = 1.0 / (1.0 + jt.exp(-pred))
+    loss = -(target * jt.safe_log(sig + 1e-8) + (1 - target) * jt.safe_log(1 - sig + 1e-8))
+    return loss
 
 
 def _wh_iou(bw, bh, aws, ahs):
@@ -60,8 +87,7 @@ class SDALoss(nn.Module):
         self.box_weight = box_weight
         self.obj_weight = obj_weight
         self.cls_weight = cls_weight
-        self.bce = nn.BCEWithLogitsLoss(reduction='none')
-        self.mse = nn.MSELoss(reduction='none')
+        # Loss functions are handled by _bce_loss and _mse_loss helper functions
 
         # Register anchors as a persistent buffer (normalized grid-cell scale)
         if BACKEND == "pytorch":
@@ -159,16 +185,50 @@ class SDALoss(nn.Module):
             # ---- Box loss (MSE on tx, ty, tw, th, tR for positives) ----
             box_pred = pred[:, :, :5, :, :]   # (B, A, 5, Hs, Ws)
             box_tgt = tgt[:, :, :5, :, :]
-            box_loss = self.mse(box_pred, box_tgt).sum(dim=2)  # (B, A, Hs, Ws)
+            box_loss = _mse_loss(box_pred, box_tgt).sum(dim=2)  # (B, A, Hs, Ws)
             box_loss = (box_loss * obj_mask).sum() / max(obj_mask.sum(), 1)
             total_loss = total_loss + self.box_weight * box_loss
 
             # ---- Objectness loss (BCE, pos:neg = 2:1) ----
             obj_pred = pred[:, :, 5, :, :]  # (B, A, Hs, Ws)
             obj_tgt = obj_mask
-            obj_loss_pos = self.bce(obj_pred, obj_tgt) * obj_mask
-            obj_loss_neg = self.bce(obj_pred, obj_tgt) * noobj_mask * 0.5
+            obj_loss_pos = _bce_loss(obj_pred, obj_tgt) * obj_mask
+            obj_loss_neg = _bce_loss(obj_pred, obj_tgt) * noobj_mask * 0.5
             obj_loss = (obj_loss_pos.sum() + obj_loss_neg.sum()) / max(obj_mask.sum() * 2, 1)
             total_loss = total_loss + self.obj_weight * obj_loss
 
         return total_loss
+
+    # Jittor 使用 execute 而不是 forward，PyTorch 使用 forward
+    def execute(self, predictions, targets, images):
+        return self.forward(predictions, targets, images)
+
+
+if __name__ == "__main__":
+    print(f"Testing with BACKEND={BACKEND}")
+
+    # Create dummy data
+    B, A, F, H, W = 2, 3, 6, 13, 13
+    if BACKEND == "pytorch":
+        import torch
+        predictions = [torch.randn(B, A*F, H, W).cuda() for H, W in [(52, 52), (26, 26), (13, 13)]]
+        images = torch.randn(B, 3, 416, 416).cuda()
+        targets = [(
+            torch.tensor([[100, 100, 30, 50, 15]], dtype=torch.float32),
+            torch.tensor([0])
+        ) for _ in range(B)]
+    else:
+        predictions = [jt.randn(B, A*F, H, W) for H, W in [(52, 52), (26, 26), (13, 13)]]
+        images = jt.randn(B, 3, 416, 416)
+        targets = [(
+            jt.array([[100, 100, 30, 50, 15]], dtype=jt.float32),
+            jt.array([0], dtype=jt.int64)
+        ) for _ in range(B)]
+
+    anchors = [[[32, 32], [48, 48], [64, 64]] for _ in range(3)]
+    strides = [8, 16, 32]
+
+    criterion = SDALoss(num_classes=1, anchors=anchors, strides=strides)
+    loss = criterion(predictions, targets, images)
+    print(f"Loss computed successfully: {loss}")
+    print(f"Loss value: {loss if BACKEND == 'pytorch' else loss.numpy()}")

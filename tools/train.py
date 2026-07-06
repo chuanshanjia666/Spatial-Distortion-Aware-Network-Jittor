@@ -21,7 +21,7 @@ from config import (
     BACKEND, DEVICE, NUM_WORKERS, BATCH_SIZE, INPUT_SIZE,
     STEP_BATCH_SIZE, TRAIN_DATASETS, VAL_DATASETS, TEST_DATASETS,
     USE_ACCUMULATION_STEP, MAX_ITER, STRIDES, CONF_THRESH, NMS_IOU_THRESH,
-    RESUME, OUTPUT_DIR,
+    RESUME, AUTO_RESUME, OUTPUT_DIR, USE_FP16,
 )
 
 if BACKEND == "pytorch":
@@ -71,11 +71,9 @@ if BACKEND == "jittor":
             ds_len = len(self.dataset)
             indices = list(range(ds_len))
             if self.shuffle:
-                if self._rng is None:
-                    self._rng = jt.rand(ds_len).argsort()
-                else:
-                    self._rng = jt.rand(ds_len).argsort()
-                indices = self._rng.numpy().tolist()
+                # Shuffle indices using numpy (Jittor compatibility)
+                import numpy as np
+                np.random.shuffle(indices)
 
             batch = []
             for idx in indices:
@@ -90,6 +88,44 @@ if BACKEND == "jittor":
             if self.collate_fn is not None:
                 return self.collate_fn(batch)
             return batch
+
+
+# ---------------------------------------------------------------------------
+#  Helpers
+# ---------------------------------------------------------------------------
+
+def _find_latest_checkpoint(output_dir):
+    """Find the most recent checkpoint in ``output_dir``.
+
+    Priority:
+        1. ``latest.pth`` (or ``latest.pkl`` for Jittor) — the last saved.
+        2. The file with the highest ``iter`` number in its name.
+
+    Returns:
+        Path to the checkpoint file, or ``None`` if nothing found.
+    """
+    ext = ".pkl" if BACKEND == "jittor" else ".pth"
+    latest_path = os.path.join(output_dir, f"latest{ext}")
+
+    if os.path.isfile(latest_path):
+        return latest_path
+
+    # Fallback: scan for the highest iter number
+    if not os.path.isdir(output_dir):
+        return None
+    best_iter = -1
+    best_path = None
+    for fname in os.listdir(output_dir):
+        if not fname.startswith("sdanet_iter") or not fname.endswith(ext):
+            continue
+        try:
+            it = int(fname.replace("sdanet_iter", "").replace(ext, ""))
+        except ValueError:
+            continue
+        if it > best_iter:
+            best_iter = it
+            best_path = os.path.join(output_dir, fname)
+    return best_path
 
 
 # ---------------------------------------------------------------------------
@@ -137,9 +173,14 @@ def main():
     criterion = SDALoss(total_classes, resolved_anchors, STRIDES)
     optimizer = build_optimizer(model)
 
-    # AMP mixed precision (PyTorch only)
-    if BACKEND == "pytorch":
-        scaler = torch.amp.GradScaler('cuda')
+    # AMP mixed precision
+    if USE_FP16:
+        if BACKEND == "pytorch":
+            scaler = torch.amp.GradScaler('cuda')
+        else:
+            # Jittor 1.x has no GradScaler nor autocast equivalent.
+            # model.float16() doesn't do FP32 master weights — use PyTorch for FP16.
+            scaler = None
     else:
         scaler = None
 
@@ -156,16 +197,28 @@ def main():
     # ---- Resume ----
     start_epoch = 0
     global_step = 0
-    if RESUME and os.path.isfile(RESUME):
+
+    resume_path = RESUME
+    if resume_path is None and AUTO_RESUME:
+        resume_path = _find_latest_checkpoint(OUTPUT_DIR)
+        if resume_path:
+            print(f"Auto-resume: found {resume_path}")
+
+    if resume_path and os.path.isfile(resume_path):
         if BACKEND == "pytorch":
-            ckpt = torch.load(RESUME, map_location='cpu', weights_only=True)
+            ckpt = torch.load(resume_path, map_location='cpu', weights_only=True)
         else:
-            ckpt = jt.load(RESUME)
+            ckpt = jt.load(resume_path)
         model.load_state_dict(ckpt['model_state'])
         optimizer.load_state_dict(ckpt['optimizer_state'])
         start_epoch = ckpt.get('epoch', 0)
         global_step = ckpt.get('global_step', 0)
-        print(f"Resumed from {RESUME} (epoch {start_epoch}, step {global_step})")
+        if scaler is not None and ckpt.get('scaler_state'):
+            scaler.load_state_dict(ckpt['scaler_state'])
+            print(f"  AMP scaler state restored")
+        print(f"Resumed from {resume_path} (epoch {start_epoch}, step {global_step})")
+    elif resume_path and not os.path.isfile(resume_path):
+        print(f"WARNING: RESUME={resume_path} not found, starting from scratch.")
 
     # ---- Training loop ----
     epoch = start_epoch
@@ -193,8 +246,8 @@ def main():
                 else:
                     images = images.cuda()
 
-            # AMP autocast for PyTorch forward pass
-            if BACKEND == "pytorch":
+            # Forward
+            if USE_FP16 and BACKEND == "pytorch":
                 with amp.autocast():
                     preds = model(images)
                     loss = criterion(preds, boxes_list, images)
@@ -211,7 +264,7 @@ def main():
 
             loss = loss / chunk_size
 
-            if BACKEND == "pytorch":
+            if USE_FP16 and BACKEND == "pytorch":
                 scaler.scale(loss).backward()
             else:
                 optimizer.backward(loss)
@@ -222,7 +275,7 @@ def main():
             if chunk_count == chunk_size:
                 global_step += 1
                 lr_scheduler.step(global_step)
-                if BACKEND == "pytorch":
+                if USE_FP16 and BACKEND == "pytorch":
                     scaler.step(optimizer)
                     scaler.update()
                 else:
@@ -245,7 +298,7 @@ def main():
         if chunk_count > 0:
             global_step += 1
             lr_scheduler.step(global_step)
-            if BACKEND == "pytorch":
+            if USE_FP16 and BACKEND == "pytorch":
                 scaler.step(optimizer)
                 scaler.update()
             else:
@@ -268,18 +321,26 @@ def main():
         print(f"--- epoch {epoch} done | avg_loss={avg_loss:.4f} | step={global_step}/{MAX_ITER} ---")
 
         # ---- Save checkpoint ----
+        scaler_state = scaler.state_dict() if (USE_FP16 and BACKEND == "pytorch") else None
         ckpt = {
             'epoch': epoch,
             'model_state': model.state_dict(),
             'optimizer_state': optimizer.state_dict(),
-            'scaler_state': scaler.state_dict() if scaler is not None else None,
+            'scaler_state': scaler_state,
             'global_step': global_step,
         }
-        ckpt_path = os.path.join(OUTPUT_DIR, f"sdanet_iter{global_step:06d}.pth")
+        ext = ".pkl" if BACKEND == "jittor" else ".pth"
+        ckpt_path = os.path.join(OUTPUT_DIR, f"sdanet_iter{global_step:06d}{ext}")
         if BACKEND == "pytorch":
             torch.save(ckpt, ckpt_path)
         else:
             jt.save(ckpt, ckpt_path)
+        # Also save as latest for auto-resume
+        latest_path = os.path.join(OUTPUT_DIR, f"latest{ext}")
+        if BACKEND == "pytorch":
+            torch.save(ckpt, latest_path)
+        else:
+            jt.save(ckpt, latest_path)
         print(f"  saved: {ckpt_path}")
 
         # ---- Validation ----
@@ -300,8 +361,9 @@ def main():
                         preds = model(images)
                         val_loss += criterion(preds, boxes_list, images)
                 else:
-                    preds = model(images)
-                    val_loss += criterion(preds, boxes_list, images)
+                    with jt.no_grad():
+                        preds = model(images)
+                        val_loss += criterion(preds, boxes_list, images)
 
                 # Decode predictions for mAP (with NMS)
                 dets = decode_predictions(preds, conf_thresh=CONF_THRESH)
