@@ -37,7 +37,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (BACKEND, SDA_BASE_KERNELS, NECK_OUT_CHANNELS,
                     NUM_ANCHORS, SSS_ENABLED, SSS_GRID,
-                    DARKNET53_PRETRAINED, INPUT_SIZE)
+                    DARKNET53_PRETRAINED, INPUT_SIZE, SDA_FC_RATIO)
 
 if BACKEND == "pytorch":
     import torch
@@ -77,6 +77,7 @@ class SDANet(nn.Module):
         self.neck = FPNNeck(in_channels=backbone_channels,
                             out_channels=NECK_OUT_CHANNELS,
                             base_kernels=base_kernels,
+                            fc_ratio=SDA_FC_RATIO,
                             use_sda=True)
 
         # Head (per-scale detection with SDAConv / SSS)
@@ -85,6 +86,7 @@ class SDANet(nn.Module):
             in_channels=NECK_OUT_CHANNELS,
             num_anchors=NUM_ANCHORS,
             base_kernels=base_kernels,
+            fc_ratio=SDA_FC_RATIO,
             sss_enabled=sss_enabled,
         )
 
@@ -166,7 +168,7 @@ if __name__ == "__main__":
     print(f"Backend: {BACKEND}, Device: {DEVICE}")
     print(f"Base kernels: {SDA_BASE_KERNELS}")
 
-    model = SDANet(sss_enabled=False)
+    model = SDANet(sss_enabled=True)
     if DEVICE == "cuda":
         model = model.cuda()
 

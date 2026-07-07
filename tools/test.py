@@ -6,7 +6,7 @@ import cv2
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
-    BACKEND, DEVICE, TEST_DATASETS, OUTPUT_DIR, INPUT_SIZE,
+    BACKEND, DEVICE, TEST_DATASETS, TRAIN_DATASETS, OUTPUT_DIR, INPUT_SIZE,
     CONF_THRESH, NMS_IOU_THRESH, IOU_THRESH,
 )
 
@@ -19,6 +19,12 @@ if BACKEND == "pytorch":
     import torch
 else:
     import jittor as jt
+    jt.flags.enable_tuner = 1
+    jt.flags.use_tensorcore = 1
+    jt.flags.use_cuda_managed_allocator = 1
+    # jt.flags.auto_mixed_precision_level = 4  # 智能 fp16
+    jt.flags.lazy_execution = 1
+    jt.flags.use_threading = 1
 
 from util import (
     decode_predictions, build_datasets, build_model, oriented_nms,
@@ -186,9 +192,9 @@ def main():
     model = load_checkpoint(checkpoint_path, model)
     model.eval()
 
-    # 加载聚类锚框（与训练时一致）
+    # 加载聚类锚框（与训练时一致——使用训练集聚类）
     resolved_anchors = load_or_cluster_anchors(
-        TEST_DATASETS, num_clusters=9, input_size=INPUT_SIZE)
+        TRAIN_DATASETS, num_clusters=9, input_size=INPUT_SIZE)
 
     # 移动到设备
     if DEVICE == "cuda":
@@ -230,6 +236,7 @@ def main():
         else:
             input_tensor = jt.array(img_np).unsqueeze(0)
             preds = model(input_tensor)
+            jt.sync_all()  # 显式同步，释放中间变量
 
         # 解码预测（使用聚类锚框，与训练时一致）
         dets = decode_predictions(preds, conf_thresh=CONF_THRESH, anchors=resolved_anchors)
@@ -273,6 +280,10 @@ def main():
             )
             output_path = os.path.join(VIS_DIR, f"detection_{i:04d}.png")
             cv2.imwrite(output_path, cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR))
+
+        # Jittor: 每隔一定批次清理内存
+        if BACKEND == "jittor" and (i + 1) % 10 == 0:
+            jt.gc()
 
     inference_time = time.time() - start_time
     speed = len(test_ds) / inference_time

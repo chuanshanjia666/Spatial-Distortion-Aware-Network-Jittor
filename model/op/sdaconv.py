@@ -193,13 +193,13 @@ class SDAConvBlock(Module):
 class SpatiallySeparateSDA(Module):
     """Spatially Separate Strategy (SSS) wrapper.
 
-    Splits the input feature map into an N×N grid and applies an
-    independent SDAConv to each cell.  Results are concatenated back
-    into the full spatial layout.
+    Splits the input feature map spatially into an N×N grid and applies
+    an independent SDAConv to each cell (same in/out channels).  Results
+    are stitched back spatially to the original H×W layout.
 
-    The paper demonstrates this strategy improves performance without
-    adding FLOPS, since the per-cell convolutions can share the same
-    runtime cost when implemented with grouped convolution.
+    Each spatial region learns its own distortion coefficients, giving
+    finer-grained distortion adaptation without increasing FLOPs
+    (per-cell convolutions operate on smaller spatial regions).
     """
 
     def __init__(self, in_channels: int, out_channels: int,
@@ -210,9 +210,10 @@ class SpatiallySeparateSDA(Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
 
-        # One SDABlock per grid cell
+        # One SDAConv per grid cell — same in/out channels,
+        # each cell covers a different spatial region
         self.cell_convs = nn.ModuleList([
-            SDAConv(in_channels, out_channels // (grid * grid),
+            SDAConv(in_channels, out_channels,
                     base_kernels=base_kernels, fc_ratio=fc_ratio)
             for _ in range(grid * grid)
         ])
@@ -220,7 +221,7 @@ class SpatiallySeparateSDA(Module):
     def forward(self, x):
         B, C, H, W = x.shape
         g = self.grid
-        # Pad if needed
+        # Pad spatial dims so H/W are divisible by grid
         pad_h = (g - H % g) % g
         pad_w = (g - W % g) % g
         if pad_h or pad_w:
@@ -229,22 +230,19 @@ class SpatiallySeparateSDA(Module):
         _, _, Hp, Wp = x.shape
         cell_h, cell_w = Hp // g, Wp // g
 
-        cells = []
+        # Split spatially → per-cell SDAConv → stitch back spatially
+        rows = []
         for i in range(g):
+            row_cells = []
             for j in range(g):
                 y1, y2 = i * cell_h, (i + 1) * cell_h
                 x1, x2 = j * cell_w, (j + 1) * cell_w
                 cell = x[:, :, y1:y2, x1:x2]
                 cell = self.cell_convs[i * g + j](cell)
-                cells.append(cell)
-
-        # Concatenate along channel dimension
-        # Reshape spatially: cells → rows → hstack → vstack
-        rows = []
-        for i in range(g):
-            row = cat(cells[i * g:(i + 1) * g], dim=3)  # concat W
+                row_cells.append(cell)
+            row = cat(row_cells, dim=3)  # concat along W
             rows.append(row)
-        out = cat(rows, dim=2)  # concat H
+        out = cat(rows, dim=2)  # concat along H
 
         # Crop back to original size
         if pad_h or pad_w:

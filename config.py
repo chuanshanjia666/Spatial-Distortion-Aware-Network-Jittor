@@ -1,6 +1,6 @@
-# BACKEND = "pytorch"
-BACKEND = "jittor"
-DEVICE = "cuda" if BACKEND == "pytorch" else "cuda"
+BACKEND = "pytorch"
+# BACKEND = "jittor"
+DEVICE = "cuda"
 
 # ---------------------------------------------------------------------------
 # Dataset
@@ -76,14 +76,11 @@ NECK_OUT_CHANNELS = 128           # channels after FPN reduction
 # Other options: (1, 3), (1, 3, 3, 5), (1, 3, 5, 7)
 SDA_BASE_KERNELS = (1, 3, 5)
 
-# SDABlock coefficient predict: GAP → FC1 → ReLU → FC2 → softmax
-SDA_FC_RATIO = 4            # FC hidden dim = C / ratio
+SDA_FC_RATIO = 128            # FC hidden dim = C / ratio
 
-# Spatially Separate Strategy (SSS)
-# ---------------------------------------------------------------------------
-# Split feature map into grid; each cell uses its own SDABlock.
+
 SSS_GRID = 3                # 3×3 grid (only used if SSS_ENABLED)
-SSS_ENABLED = False         # toggle per experiment; paper applies to head
+SSS_ENABLED = True          # toggle per experiment; paper applies to head
 
 # Head (detection)
 # ---------------------------------------------------------------------------

@@ -13,7 +13,8 @@ BatchNorm so that small micro-batches remain stable.
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import (BACKEND, SDA_BASE_KERNELS, NECK_OUT_CHANNELS,
-                    NUM_ANCHORS, BOX_FIELDS, SSS_ENABLED, SSS_GRID)
+                    NUM_ANCHORS, BOX_FIELDS, SSS_ENABLED, SSS_GRID,
+                    SDA_FC_RATIO)
 
 if BACKEND == "pytorch":
     import torch
@@ -43,16 +44,19 @@ class SDAHead(nn.Module):
         num_anchors:  Anchors per scale.
         num_classes:  Number of classes.
         base_kernels: SDAConv base kernel sizes.
+        fc_ratio:     SDAConv FC hidden dim = in_channels / fc_ratio.
         sss_enabled:  Enable Spatially Separate Strategy.
         sss_grid:     Grid size for SSS.
     """
 
     def __init__(self, in_channels=None, num_anchors=None,
-                 base_kernels=None, sss_enabled=None, sss_grid=None):
+                 base_kernels=None, fc_ratio=None,
+                 sss_enabled=None, sss_grid=None):
         super().__init__()
         in_channels = in_channels or NECK_OUT_CHANNELS
         num_anchors = num_anchors or NUM_ANCHORS
         base_kernels = base_kernels or SDA_BASE_KERNELS
+        fc_ratio = fc_ratio if fc_ratio is not None else SDA_FC_RATIO
         sss_enabled = sss_enabled if sss_enabled is not None else SSS_ENABLED
         sss_grid = sss_grid or SSS_GRID
 
@@ -62,16 +66,15 @@ class SDAHead(nn.Module):
         if sss_enabled:
             self.sda_conv = nn.Sequential(
                 SpatiallySeparateSDA(in_channels, in_channels,
-                                     grid=sss_grid, base_kernels=base_kernels),
+                                     grid=sss_grid, base_kernels=base_kernels,
+                                     fc_ratio=fc_ratio),
             )
         else:
             self.sda_conv = SDAConv(in_channels, in_channels,
-                                    base_kernels=base_kernels)
+                                    base_kernels=base_kernels,
+                                    fc_ratio=fc_ratio)
 
-        self.bn_act = nn.Sequential(
-            _norm2d(in_channels),
-            nn.LeakyReLU(0.1),
-        )
+        self.cbl = _CBL(in_channels, in_channels, 3)
 
         self.pred_conv = nn.Conv2d(in_channels, out_channels, 1,
                                    stride=1, padding=0, bias=True)
@@ -80,7 +83,7 @@ class SDAHead(nn.Module):
 
     def forward(self, x):
         x = self.sda_conv(x)
-        x = self.bn_act(x)
+        x = self.cbl(x)
         return self.pred_conv(x)
 
     def execute(self, x):
@@ -96,10 +99,10 @@ class SDAHeadMulti(nn.Module):
     """
 
     def __init__(self, num_scales=3, in_channels=None, num_anchors=None,
-                 base_kernels=None, sss_enabled=None):
+                 base_kernels=None, fc_ratio=None, sss_enabled=None):
         super().__init__()
         self.heads = nn.ModuleList([
-            SDAHead(in_channels, num_anchors, base_kernels, sss_enabled)
+            SDAHead(in_channels, num_anchors, base_kernels, fc_ratio, sss_enabled)
             for _ in range(num_scales)
         ])
 
