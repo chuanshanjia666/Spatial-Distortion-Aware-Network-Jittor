@@ -1,5 +1,5 @@
-BACKEND = "pytorch"
-# BACKEND = "jittor"
+# BACKEND = "pytorch"
+BACKEND = "jittor"
 DEVICE = "cuda" if BACKEND == "pytorch" else "cuda"
 
 # ---------------------------------------------------------------------------

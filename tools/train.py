@@ -31,6 +31,13 @@ if BACKEND == "pytorch":
 else:
     import jittor as jt
 
+    jt.flags.enable_tuner = 1
+    jt.flags.use_tensorcore = 1
+    jt.flags.use_cuda_managed_allocator = 1
+    # jt.flags.auto_mixed_precision_level = 4  # 智能 fp16
+    jt.flags.lazy_execution = 1
+    jt.flags.use_threading = 1
+
 from util import (
     compute_map, compute_map_coco, SDALoss,
     decode_predictions, collate_fn, build_datasets, build_model,
@@ -39,24 +46,64 @@ from util import (
 
 
 # ---------------------------------------------------------------------------
-# Jittor DataLoader shim
+# DataLoader implementations per backend
 # ---------------------------------------------------------------------------
-if BACKEND == "jittor":
-    import math
-    import jittor as jt
+
+if BACKEND == "pytorch":
+    import threading
 
     class DataLoader:
-        """Minimal DataLoader for Jittor (sequential + optional shuffle)."""
+        """PyTorch DataLoader with optimized prefetching and CUDA async transfer."""
+
+        def __init__(self, dataset, batch_size=1, shuffle=False,
+                     num_workers=4, collate_fn=None, pin_memory=True,
+                     drop_last=False, prefetch_factor=2):
+            self._loader = torch.utils.data.DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=shuffle,
+                num_workers=num_workers,
+                collate_fn=collate_fn,
+                pin_memory=pin_memory,
+                drop_last=drop_last,
+                prefetch_factor=prefetch_factor,
+                persistent_workers=True if num_workers > 0 else False,
+            )
+            self.dataset = dataset
+            self.batch_size = batch_size
+            self.shuffle = shuffle
+            self.num_workers = num_workers
+            self.collate_fn = collate_fn
+            self.pin_memory = pin_memory
+            self.drop_last = drop_last
+            self.prefetch_factor = prefetch_factor
+
+        def __len__(self):
+            return len(self._loader)
+
+        def __iter__(self):
+            return iter(self._loader)
+
+
+# ---------------------------------------------------------------------------
+# Jittor DataLoader with multi-threaded prefetch
+# ---------------------------------------------------------------------------
+
+if BACKEND == "jittor":
+    import math
+
+    class DataLoader:
+        """Simple DataLoader for Jittor without threading complications."""
 
         def __init__(self, dataset, batch_size=1, shuffle=False,
                      num_workers=0, collate_fn=None, pin_memory=False,
-                     drop_last=False):
+                     drop_last=False, prefetch_factor=2):
             self.dataset = dataset
             self.batch_size = batch_size
             self.shuffle = shuffle
             self.collate_fn = collate_fn
             self.drop_last = drop_last
-            self._rng = None
+            self.num_workers = num_workers
 
             ds_len = len(dataset)
             if drop_last:
@@ -71,7 +118,6 @@ if BACKEND == "jittor":
             ds_len = len(self.dataset)
             indices = list(range(ds_len))
             if self.shuffle:
-                # Shuffle indices using numpy (Jittor compatibility)
                 import numpy as np
                 np.random.shuffle(indices)
 
@@ -205,11 +251,14 @@ def main():
             print(f"Auto-resume: found {resume_path}")
 
     if resume_path and os.path.isfile(resume_path):
+        print(f"[DEBUG] Loading checkpoint from {resume_path}")
         if BACKEND == "pytorch":
             ckpt = torch.load(resume_path, map_location='cpu', weights_only=False)
         else:
             ckpt = jt.load(resume_path)
+        print(f"[DEBUG] Checkpoint loaded, loading model state...")
         model.load_state_dict(ckpt['model_state'])
+        print(f"[DEBUG] Model state loaded, loading optimizer state...")
         optimizer.load_state_dict(ckpt['optimizer_state'])
         start_epoch = ckpt.get('epoch', 0)
         global_step = ckpt.get('global_step', 0)
@@ -219,6 +268,8 @@ def main():
         print(f"Resumed from {resume_path} (epoch {start_epoch}, step {global_step})")
     elif resume_path and not os.path.isfile(resume_path):
         print(f"WARNING: RESUME={resume_path} not found, starting from scratch.")
+    else:
+        print(f"[DEBUG] No checkpoint to resume, starting from scratch.")
 
     # ---- Training loop ----
     epoch = start_epoch

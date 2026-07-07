@@ -93,8 +93,12 @@ class SDANet(nn.Module):
         self.strides = [8, 16, 32]
 
         # Load pretrained backbone if available
-        if pretrained and os.path.isfile(pretrained):
-            self._load_pretrained(pretrained)
+        if pretrained:
+            if os.path.isfile(pretrained):
+                self._load_pretrained(pretrained)
+            else:
+                print(f"[SDANet] WARNING: pretrained file not found: {pretrained}")
+                print(f"[SDANet] Training from SCRATCH (random init) - no pretrained weights loaded!")
 
     def _load_pretrained(self, path):
         if BACKEND == "pytorch":
