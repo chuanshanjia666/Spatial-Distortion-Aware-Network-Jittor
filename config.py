@@ -1,5 +1,5 @@
-BACKEND = "pytorch"
-# BACKEND = "jittor"
+# BACKEND = "pytorch"
+BACKEND = "jittor"
 DEVICE = "cuda"
 
 # ---------------------------------------------------------------------------
@@ -33,9 +33,9 @@ GN_NUM_GROUPS = 32          # GroupNorm groups (auto-clamped to divisor of chann
 
 # Mixed precision (FP16) — reduces GPU memory, speeds up training
 # PyTorch: torch.cuda.amp.GradScaler + autocast (FP32 master weights + FP16 compute)
-# Jittor 1.x: DOES NOT support AMP-style mixed precision. model.float16()
-# and flag_scope(amp_reg) don't provide FP32 master weights, causing gradient
-# overflow / dtype mismatch.  Use FP32 only unless on Jittor 2.x or PyTorch.
+# Jittor:  jt.flags.auto_mixed_precision_level = 4 (prefer16). Weights → float_auto(),
+#          inputs → float_auto(). Reduce ops (sum/mean) internally promote to fp32;
+#          explicit fp32 tensors (loss) stay fp32.  ~2× memory savings on both backends.
 USE_FP16 = True
 
 LOAD_FROM_PRETRAIN = True

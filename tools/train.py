@@ -34,10 +34,16 @@ else:
 
     jt.flags.enable_tuner = 1
     jt.flags.use_tensorcore = 1
-    jt.flags.use_cuda_managed_allocator = 1
+    jt.flags.use_cuda_managed_allocator = 0
     # jt.flags.auto_mixed_precision_level = 4  # 智能 fp16
     jt.flags.lazy_execution = 1
     jt.flags.use_threading = 1
+
+    # Jittor mixed precision: level 4 = prefer16, ~2x memory savings
+    if USE_FP16:
+        jt.flags.auto_mixed_precision_level = 4
+    else:
+        jt.flags.auto_mixed_precision_level = 0
 
 from util import (
     compute_map, compute_map_coco, SDALoss,
@@ -241,8 +247,9 @@ def main():
         if BACKEND == "pytorch":
             scaler = torch.amp.GradScaler('cuda')
         else:
-            # Jittor 1.x has no GradScaler nor autocast equivalent.
-            # model.float16() doesn't do FP32 master weights — use PyTorch for FP16.
+            # Jittor: weights are already float16 via model.float_auto().
+            # auto_mixed_precision_level=4 handles compute dtype automatically.
+            # Loss uses fp32 internally (explicit jt.array(0.0, float32)).
             scaler = None
     else:
         scaler = None
@@ -320,6 +327,10 @@ def main():
             if DEVICE == "cuda":
                 images = images.cuda()
 
+            # Jittor FP16: input dtype must match model weight dtype
+            if USE_FP16 and BACKEND == "jittor":
+                images = images.float_auto()
+
             if BACKEND == "pytorch":
                 with torch.no_grad():
                     preds = model(images)
@@ -396,6 +407,10 @@ def main():
 
         if DEVICE == "cuda":
             images = images.cuda()
+
+        # Jittor FP16: auto-convert input to match amp_reg (prefer16 → float16)
+        if USE_FP16 and BACKEND == "jittor":
+            images = images.float_auto()
 
         # Forward
         if USE_FP16 and BACKEND == "pytorch":
