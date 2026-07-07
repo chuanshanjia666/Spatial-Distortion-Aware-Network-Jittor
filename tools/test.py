@@ -7,13 +7,13 @@ import cv2
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
     BACKEND, DEVICE, TEST_DATASETS, TRAIN_DATASETS, OUTPUT_DIR, INPUT_SIZE,
-    CONF_THRESH, NMS_IOU_THRESH, IOU_THRESH,
+    CONF_THRESH, NMS_IOU_THRESH, IOU_THRESH, RANDOM_SEED,
 )
 
 # 测试相关配置
 TEST_CHECKPOINT = "output/latest.pth"  # 权重文件路径，如 "output/sdanet_epoch050.pth"
 VIS_DIR = "output/vis_results"  # 可视化结果保存目录
-NUM_VIS = 32  # 可视化图片数量（设为0则不可视化）
+NUM_VIS = 500  # 可视化图片数量（设为0则不可视化）
 
 if BACKEND == "pytorch":
     import torch
@@ -130,6 +130,14 @@ def visualize_detection(image, boxes, scores, labels, gt_boxes=None,
 
 
 def main():
+    # ---- Set random seed for reproducibility ----
+    import random
+    random.seed(RANDOM_SEED)
+    np.random.seed(RANDOM_SEED)
+    if BACKEND == "pytorch":
+        torch.manual_seed(RANDOM_SEED)
+        torch.cuda.manual_seed_all(RANDOM_SEED)
+
     print("=" * 60)
     print("SDANet 测试评估")
     print("=" * 60)

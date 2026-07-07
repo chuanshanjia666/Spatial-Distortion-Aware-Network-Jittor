@@ -21,7 +21,8 @@ from config import (
     BACKEND, DEVICE, NUM_WORKERS, BATCH_SIZE, INPUT_SIZE,
     STEP_BATCH_SIZE, TRAIN_DATASETS, VAL_DATASETS, TEST_DATASETS,
     USE_ACCUMULATION_STEP, MAX_ITER, STRIDES, CONF_THRESH, NMS_IOU_THRESH,
-    RESUME, AUTO_RESUME, OUTPUT_DIR, USE_FP16,
+    RESUME, AUTO_RESUME, OUTPUT_DIR, USE_FP16, RANDOM_SEED,
+    VALIDATE_INTERVAL, SAVE_INTERVAL,
 )
 
 if BACKEND == "pytorch":
@@ -179,7 +180,23 @@ def _find_latest_checkpoint(output_dir):
 # ---------------------------------------------------------------------------
 
 def main():
+    # ---- Set random seed for reproducibility ----
+    import random
+    random.seed(RANDOM_SEED)
+    np.random.seed(RANDOM_SEED)
+    if BACKEND == "pytorch":
+        torch.manual_seed(RANDOM_SEED)
+        torch.cuda.manual_seed_all(RANDOM_SEED)
+        # Note: cudnn.deterministic + benchmark=False hurts speed noticeably.
+        # CPU seeds alone are sufficient for practical reproducibility.
+        # Uncomment below for bitwise-reproducible results at the cost of speed:
+        # torch.backends.cudnn.deterministic = True
+        # torch.backends.cudnn.benchmark = False
+    else:
+        jt.set_global_seed(RANDOM_SEED)
+
     print(f"Backend: {BACKEND}, Device: {DEVICE}")
+    print(f"Random seed: {RANDOM_SEED}")
     print(f"Train datasets: {TRAIN_DATASETS}")
     print(f"Val datasets:   {VAL_DATASETS}")
     print(f"Input size: {INPUT_SIZE}, Step batch: {STEP_BATCH_SIZE}, "
@@ -271,82 +288,137 @@ def main():
     else:
         print(f"[DEBUG] No checkpoint to resume, starting from scratch.")
 
+    # ---- Helpers for save and validation ----
+
+    def _save_checkpoint(step, ep):
+        scaler_state = scaler.state_dict() if (USE_FP16 and BACKEND == "pytorch") else None
+        ckpt = {
+            'epoch': ep,
+            'model_state': model.state_dict(),
+            'optimizer_state': optimizer.state_dict(),
+            'scaler_state': scaler_state,
+            'global_step': step,
+        }
+        ext = ".pkl" if BACKEND == "jittor" else ".pth"
+        ckpt_path = os.path.join(OUTPUT_DIR, f"sdanet_iter{step:06d}{ext}")
+        if BACKEND == "pytorch":
+            torch.save(ckpt, ckpt_path)
+            torch.save(ckpt, os.path.join(OUTPUT_DIR, f"latest{ext}"))
+        else:
+            jt.save(ckpt, ckpt_path)
+            jt.save(ckpt, os.path.join(OUTPUT_DIR, f"latest{ext}"))
+        print(f"  saved: {ckpt_path}")
+
+    def _validate():
+        if val_loader is None:
+            return
+        model.eval()
+        val_loss = 0.0
+        all_preds = []
+        all_targets = []
+        for images, boxes_list in val_loader:
+            if DEVICE == "cuda":
+                images = images.cuda()
+
+            if BACKEND == "pytorch":
+                with torch.no_grad():
+                    preds = model(images)
+                    val_loss += criterion(preds, boxes_list, images)
+            else:
+                with jt.no_grad():
+                    preds = model(images)
+                    val_loss += criterion(preds, boxes_list, images)
+
+            dets = decode_predictions(preds, conf_thresh=CONF_THRESH, anchors=resolved_anchors)
+            batch_preds = []
+            for dets_per_img in dets:
+                pred_boxes, pred_scores, pred_labels = dets_per_img
+                if len(pred_boxes) > 0:
+                    keep = oriented_nms(pred_boxes, pred_scores, iou_thresh=NMS_IOU_THRESH)
+                    pred_boxes = pred_boxes[keep]
+                    pred_scores = pred_scores[keep]
+                    pred_labels = pred_labels[keep]
+                batch_preds.append((pred_boxes, pred_scores, pred_labels))
+            all_preds.extend(batch_preds)
+            gts = []
+            for item in boxes_list:
+                if isinstance(item, (list, tuple)):
+                    b, l = item[0], item[1]
+                else:
+                    b = item
+                    l = np.zeros(len(b) if hasattr(b, '__len__') else 0, dtype=np.int64)
+                if BACKEND == "pytorch":
+                    bn = b.cpu().numpy() if torch.is_tensor(b) else b
+                    ln = l.cpu().numpy() if torch.is_tensor(l) else l
+                else:
+                    bn = b.numpy() if hasattr(b, 'numpy') else b
+                    ln = l.numpy() if hasattr(l, 'numpy') else l
+                if not isinstance(ln, np.ndarray):
+                    ln = np.array(ln, dtype=np.int64)
+                gts.append((bn, ln))
+            all_targets.extend(gts)
+
+        vloss = val_loss.item() if BACKEND == "pytorch" else val_loss.numpy()[0]
+        vloss = vloss / len(val_loader)
+        if total_classes > 0 and len(all_preds) > 0:
+            map_results = compute_map(all_preds, all_targets,
+                                       [f"class_{i}" for i in range(total_classes)])
+            print(f"  val_loss={vloss:.4f}  mAP@50={map_results['mAP']:.4f}")
+        else:
+            print(f"  val_loss={vloss:.4f}")
+        model.train()
+
     # ---- Training loop ----
     epoch = start_epoch
+    epoch_loss = 0.0
+    epoch_updates = 0
+    samples_seen = 0
+    train_len = len(train_loader.dataset)
+    model.train()
+    optimizer.zero_grad()
+    chunk_loss = 0.0
+    chunk_count = 0
+
+    train_iter = iter(train_loader)
     while global_step < MAX_ITER:
-        epoch += 1
-        model.train()
-        epoch_loss = 0.0
-        epoch_updates = 0
-        optimizer.zero_grad()
-        train_len = len(train_loader)
-        tail_chunk = train_len % accumulation_steps
-        if tail_chunk == 0:
-            tail_chunk = accumulation_steps
-        chunk_loss = 0.0
-        chunk_size = accumulation_steps
-        chunk_count = 0
+        try:
+            images, boxes_list = next(train_iter)
+        except StopIteration:
+            # Epoch finished — print stats and start new epoch
+            avg_loss = epoch_loss / max(1, epoch_updates)
+            print(f"--- epoch {epoch} done | avg_loss={avg_loss:.4f} | step={global_step}/{MAX_ITER} ---")
+            epoch += 1
+            epoch_loss = 0.0
+            epoch_updates = 0
+            samples_seen = 0
+            train_iter = iter(train_loader)
+            images, boxes_list = next(train_iter)
 
-        for batch_idx, (images, boxes_list) in enumerate(train_loader):
-            if global_step >= MAX_ITER:
-                break
+        if DEVICE == "cuda":
+            images = images.cuda()
 
-            if DEVICE == "cuda":
-                if BACKEND == "pytorch":
-                    images = images.cuda()
-                else:
-                    images = images.cuda()
-
-            # Forward
-            if USE_FP16 and BACKEND == "pytorch":
-                with amp.autocast():
-                    preds = model(images)
-                    loss = criterion(preds, boxes_list, images)
-            else:
+        # Forward
+        if USE_FP16 and BACKEND == "pytorch":
+            with amp.autocast():
                 preds = model(images)
                 loss = criterion(preds, boxes_list, images)
+        else:
+            preds = model(images)
+            loss = criterion(preds, boxes_list, images)
 
-            raw_loss = loss.item() if BACKEND == "pytorch" else loss.numpy()[0]
+        raw_loss = loss.item() if BACKEND == "pytorch" else loss.numpy()[0]
+        loss = loss / accumulation_steps
 
-            if tail_chunk != accumulation_steps and batch_idx >= train_len - tail_chunk:
-                chunk_size = tail_chunk
-            else:
-                chunk_size = accumulation_steps
+        if USE_FP16 and BACKEND == "pytorch":
+            scaler.scale(loss).backward()
+        else:
+            optimizer.backward(loss)
 
-            loss = loss / chunk_size
+        chunk_count += 1
+        chunk_loss += raw_loss
+        samples_seen += images.shape[0]
 
-            if USE_FP16 and BACKEND == "pytorch":
-                scaler.scale(loss).backward()
-            else:
-                optimizer.backward(loss)
-
-            chunk_count += 1
-            chunk_loss += raw_loss
-
-            if chunk_count == chunk_size:
-                global_step += 1
-                lr_scheduler.step(global_step)
-                if USE_FP16 and BACKEND == "pytorch":
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    optimizer.step()
-                optimizer.zero_grad()
-
-                update_loss = chunk_loss / chunk_count
-                epoch_loss += update_loss
-                epoch_updates += 1
-
-                if global_step == 1 or global_step % 20 == 0:
-                    cur_lr = optimizer.param_groups[0]['lr']
-                    print(f"  epoch {epoch:3d} | iter {global_step:5d}/{MAX_ITER} "
-                          f"| loss {update_loss:.4f} "
-                          f"| lr {cur_lr:.6f}")
-
-                chunk_loss = 0.0
-                chunk_count = 0
-
-        if chunk_count > 0:
+        if chunk_count == accumulation_steps:
             global_step += 1
             lr_scheduler.step(global_step)
             if USE_FP16 and BACKEND == "pytorch":
@@ -360,103 +432,22 @@ def main():
             epoch_loss += update_loss
             epoch_updates += 1
 
-            cur_lr = optimizer.param_groups[0]['lr']
-            print(f"  epoch {epoch:3d} | iter {global_step:5d}/{MAX_ITER} "
-                  f"| loss {update_loss:.4f} "
-                  f"| lr {cur_lr:.6f}")
+            if global_step == 1 or global_step % 20 == 0:
+                cur_lr = optimizer.param_groups[0]['lr']
+                print(f"  epoch {epoch:3d} | iter {global_step:5d}/{MAX_ITER} "
+                      f"| loss {update_loss:.4f} "
+                      f"| lr {cur_lr:.6f}")
 
-        if epoch_updates > 0:
-            avg_loss = epoch_loss / epoch_updates
-        else:
-            avg_loss = 0.0
-        print(f"--- epoch {epoch} done | avg_loss={avg_loss:.4f} | step={global_step}/{MAX_ITER} ---")
+            chunk_loss = 0.0
+            chunk_count = 0
 
-        # ---- Save checkpoint ----
-        scaler_state = scaler.state_dict() if (USE_FP16 and BACKEND == "pytorch") else None
-        ckpt = {
-            'epoch': epoch,
-            'model_state': model.state_dict(),
-            'optimizer_state': optimizer.state_dict(),
-            'scaler_state': scaler_state,
-            'global_step': global_step,
-        }
-        ext = ".pkl" if BACKEND == "jittor" else ".pth"
-        ckpt_path = os.path.join(OUTPUT_DIR, f"sdanet_iter{global_step:06d}{ext}")
-        if BACKEND == "pytorch":
-            torch.save(ckpt, ckpt_path)
-        else:
-            jt.save(ckpt, ckpt_path)
-        # Also save as latest for auto-resume
-        latest_path = os.path.join(OUTPUT_DIR, f"latest{ext}")
-        if BACKEND == "pytorch":
-            torch.save(ckpt, latest_path)
-        else:
-            jt.save(ckpt, latest_path)
-        print(f"  saved: {ckpt_path}")
+            # Validation
+            if val_loader is not None and global_step % VALIDATE_INTERVAL == 0:
+                _validate()
 
-        # ---- Validation ----
-        if val_loader is not None:
-            model.eval()
-            val_loss = 0.0
-            all_preds = []
-            all_targets = []
-            for images, boxes_list in val_loader:
-                if DEVICE == "cuda":
-                    if BACKEND == "pytorch":
-                        images = images.cuda()
-                    else:
-                        images = images.cuda()
-
-                if BACKEND == "pytorch":
-                    with torch.no_grad():
-                        preds = model(images)
-                        val_loss += criterion(preds, boxes_list, images)
-                else:
-                    with jt.no_grad():
-                        preds = model(images)
-                        val_loss += criterion(preds, boxes_list, images)
-
-                # Decode predictions for mAP (with NMS)
-                dets = decode_predictions(preds, conf_thresh=CONF_THRESH, anchors=resolved_anchors)
-                batch_preds = []
-                for dets_per_img in dets:
-                    pred_boxes, pred_scores, pred_labels = dets_per_img
-                    if len(pred_boxes) > 0:
-                        keep = oriented_nms(pred_boxes, pred_scores, iou_thresh=NMS_IOU_THRESH)
-                        pred_boxes = pred_boxes[keep]
-                        pred_scores = pred_scores[keep]
-                        pred_labels = pred_labels[keep]
-                    batch_preds.append((pred_boxes, pred_scores, pred_labels))
-                all_preds.extend(batch_preds)
-                gts = []
-                for item in boxes_list:
-                    # item is (boxes, labels) from collate_fn
-                    if isinstance(item, (list, tuple)):
-                        b = item[0]
-                        l = item[1]
-                    else:
-                        b = item
-                        l = np.zeros(len(b) if hasattr(b, '__len__') else 0, dtype=np.int64)
-                    if BACKEND == "pytorch":
-                        bn = b.cpu().numpy() if torch.is_tensor(b) else b
-                        ln = l.cpu().numpy() if torch.is_tensor(l) else l
-                    else:
-                        bn = b.numpy() if hasattr(b, 'numpy') else b
-                        ln = l.numpy() if hasattr(l, 'numpy') else l
-                    if not isinstance(ln, np.ndarray):
-                        ln = np.array(ln, dtype=np.int64)
-                    gts.append((bn, ln))
-                all_targets.extend(gts)
-
-            val_loss = val_loss.item() if BACKEND == "pytorch" else val_loss.numpy()[0]
-            val_loss = val_loss / len(val_loader)
-            if total_classes > 0 and len(all_preds) > 0:
-                map_results = compute_map(all_preds, all_targets,
-                                           [f"class_{i}" for i in range(total_classes)])
-                print(f"  val_loss={val_loss:.4f}  mAP@50={map_results['mAP']:.4f}")
-            else:
-                print(f"  val_loss={val_loss:.4f}")
-            model.train()
+            # Save
+            if global_step % SAVE_INTERVAL == 0:
+                _save_checkpoint(global_step, epoch)
 
     print("Training complete.")
 

@@ -6,7 +6,8 @@ DEVICE = "cuda"
 # Dataset
 # ---------------------------------------------------------------------------
 NUM_WORKERS = 4
-TRAIN_DATASETS = ["habbof[train]"]
+TRAIN_DATASETS = ["cepdof[train]","wepdtof[train]"]
+# TRAIN_DATASETS = ["habbof[train]"]
 VAL_DATASETS   = ["habbof[val]"]
 TEST_DATASETS  = ["habbof[test]"]
 
@@ -44,6 +45,8 @@ MOMENTUM = 0.9
 WEIGHT_DECAY = 0.0001
 MAX_ITER = 6000             # fine-tuning iterations on fisheye datasets
 WARMUP_ITERS = 20
+VALIDATE_INTERVAL = 100        # validate every N iterations
+SAVE_INTERVAL = 100            # save checkpoint every N iterations
 RESUME = None               # explicit checkpoint path (takes priority over AUTO_RESUME)
 AUTO_RESUME = True          # if True and RESUME is None, auto-load latest checkpoint from OUTPUT_DIR
 OUTPUT_DIR = "output"       # directory for saving checkpoints
@@ -116,3 +119,8 @@ IOU_THRESH = 0.5            # AP@50
 CONF_THRESH = 0.3
 NMS_IOU_THRESH = 0.45
 MAX_DETECTIONS = 300
+
+# ---------------------------------------------------------------------------
+# Random seed (for reproducibility)
+# ---------------------------------------------------------------------------
+RANDOM_SEED = 42
