@@ -84,6 +84,7 @@ def main():
     fixed_count = 0
 
     for fname in json_files:
+        scene_name = os.path.splitext(fname)[0]
         path = os.path.join(ann_dir, fname)
         with open(path) as fh:
             data = json.load(fh)
@@ -97,6 +98,13 @@ def main():
             img_id_counter += 1
 
             raw_fn = img.get("file_name", f"{old_id}.jpg")
+
+            # Fix missing subdirectory: if file_name has no "/", it's missing
+            # the scene subdirectory (e.g. "All_off_001835.jpg" instead of
+            # "All_off/All_off_001835.jpg").  Prepend the scene name.
+            if "/" not in raw_fn:
+                raw_fn = os.path.join(scene_name, raw_fn)
+
             fixed_fn = _find_real_path(root_dir, raw_fn)
             if fixed_fn != raw_fn:
                 fixed_count += 1
