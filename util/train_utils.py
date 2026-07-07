@@ -9,7 +9,7 @@ Supports both PyTorch and Jittor backends.
 
 import numpy as np
 from config import (BACKEND, ANCHORS, STRIDES, BOX_FIELDS, INPUT_SIZE,
-                    DEVICE, LR, MIN_LR, WARMUP_ITERS, ANCHORS_AUTO_CLUSTER, USE_FP16)
+                    DEVICE, LR, MIN_LR, WARMUP_ITERS, ANCHORS_AUTO_CLUSTER)
 
 if BACKEND == "pytorch":
     import torch
@@ -266,9 +266,6 @@ def build_model(num_classes):
     )
     if DEVICE == "cuda":
         model = model.cuda()
-    # FP16: convert all params to float16/float32 based on amp_reg
-    if USE_FP16 and BACKEND == "jittor":
-        model.float_auto()
     return model
 
 

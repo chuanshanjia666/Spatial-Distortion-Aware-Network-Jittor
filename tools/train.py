@@ -22,7 +22,7 @@ from config import (
     STEP_BATCH_SIZE, TRAIN_DATASETS, VAL_DATASETS, TEST_DATASETS,
     USE_ACCUMULATION_STEP, MAX_ITER, STRIDES, CONF_THRESH, NMS_IOU_THRESH,
     RESUME, AUTO_RESUME, OUTPUT_DIR, USE_FP16, RANDOM_SEED,
-    VALIDATE_INTERVAL, SAVE_INTERVAL,
+    VALIDATE_INTERVAL, SAVE_INTERVAL, LOG_INTERVAL,
 )
 
 if BACKEND == "pytorch":
@@ -34,16 +34,10 @@ else:
 
     jt.flags.enable_tuner = 1
     jt.flags.use_tensorcore = 1
-    jt.flags.use_cuda_managed_allocator = 0
+    jt.flags.use_cuda_managed_allocator = 1
     # jt.flags.auto_mixed_precision_level = 4  # 智能 fp16
     jt.flags.lazy_execution = 1
     jt.flags.use_threading = 1
-
-    # Jittor mixed precision: level 4 = prefer16, ~2x memory savings
-    if USE_FP16:
-        jt.flags.auto_mixed_precision_level = 4
-    else:
-        jt.flags.auto_mixed_precision_level = 0
 
 from util import (
     compute_map, compute_map_coco, SDALoss,
@@ -247,9 +241,8 @@ def main():
         if BACKEND == "pytorch":
             scaler = torch.amp.GradScaler('cuda')
         else:
-            # Jittor: weights are already float16 via model.float_auto().
-            # auto_mixed_precision_level=4 handles compute dtype automatically.
-            # Loss uses fp32 internally (explicit jt.array(0.0, float32)).
+            # Jittor 1.x has no GradScaler nor autocast equivalent.
+            # model.float16() doesn't do FP32 master weights — use PyTorch for FP16.
             scaler = None
     else:
         scaler = None
@@ -326,10 +319,6 @@ def main():
         for images, boxes_list in val_loader:
             if DEVICE == "cuda":
                 images = images.cuda()
-
-            # Jittor FP16: input dtype must match model weight dtype
-            if USE_FP16 and BACKEND == "jittor":
-                images = images.float_auto()
 
             if BACKEND == "pytorch":
                 with torch.no_grad():
@@ -408,10 +397,6 @@ def main():
         if DEVICE == "cuda":
             images = images.cuda()
 
-        # Jittor FP16: auto-convert input to match amp_reg (prefer16 → float16)
-        if USE_FP16 and BACKEND == "jittor":
-            images = images.float_auto()
-
         # Forward
         if USE_FP16 and BACKEND == "pytorch":
             with amp.autocast():
@@ -447,7 +432,7 @@ def main():
             epoch_loss += update_loss
             epoch_updates += 1
 
-            if global_step == 1 or global_step % 20 == 0:
+            if global_step == 1 or global_step % LOG_INTERVAL == 0:
                 cur_lr = optimizer.param_groups[0]['lr']
                 print(f"  epoch {epoch:3d} | iter {global_step:5d}/{MAX_ITER} "
                       f"| loss {update_loss:.4f} "
