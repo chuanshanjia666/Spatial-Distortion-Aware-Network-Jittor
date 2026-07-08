@@ -81,7 +81,7 @@ def _val_metrics(preds, targets, class_names, label=""):
 
     coco = compute_map(preds, targets, class_names)
     print(f"  {label}  preds={tp}  GT={tg}  "
-          f"AP@50={coco['AP50']:.4f}  mAP={coco['mAP']:.4f}")
+          f"mAP={coco['mAP']:.4f}")
     if np.isnan(coco['mAP']):
         print("\n  ❌ FAIL: mAP is NaN")
         sys.exit(1)

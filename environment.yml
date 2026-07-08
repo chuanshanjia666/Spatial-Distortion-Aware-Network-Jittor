@@ -3,12 +3,14 @@ channels:
   - nvidia
   - conda-forge
   - defaults
+  - nodefaults
 dependencies:
   - python=3.10
-  - cuda-toolkit=11.8
-  - cudnn=8
-  - gcc=11
-  - gxx=11
+  - cuda-toolkit=12.4
+  - cudnn=8.9
+  # - nvcc=11.8
+  - gcc=12
+  - gxx=12
   - openmpi
   - libgomp
   - pip

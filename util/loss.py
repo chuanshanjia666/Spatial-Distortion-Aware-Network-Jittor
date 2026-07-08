@@ -15,6 +15,8 @@ from config import (
     OBJ_LOSS_WEIGHT, STRIDES
 )
 
+import numpy as np
+
 if BACKEND == "pytorch":
     import torch
     import torch.nn as nn
@@ -135,6 +137,14 @@ class SDALoss(nn.Module):
             obj_mask = zeros(B, A, Hs, Ws)     # 1 = positive
             noobj_mask = ones(B, A, Hs, Ws)
 
+            # Pre-compute anchors on CPU to avoid GPU-CPU sync in loop
+            if BACKEND == "pytorch":
+                anchor_ws = self.anchors[s_idx, :, 0].cpu().numpy() / stride  # (A,) grid-scale
+                anchor_hs = self.anchors[s_idx, :, 1].cpu().numpy() / stride
+            else:
+                anchor_ws = self.anchors[s_idx, :, 0].numpy() / stride  # (A,) grid-scale
+                anchor_hs = self.anchors[s_idx, :, 1].numpy() / stride
+
             for b in range(B):
                 boxes = targets[b][0]  # (N, 5) [cx, cy, w, h, R] in pixels
                 if boxes.shape[0] == 0:
@@ -144,46 +154,77 @@ class SDALoss(nn.Module):
                 boxes_scaled = boxes.clone()
                 boxes_scaled[:, :4] /= stride
 
-                # Canonicalise w/h per-box: w=short, h=long (matches anchor clustering)
-                for ib in range(boxes_scaled.shape[0]):
-                    w, h = boxes_scaled[ib, 2].item(), boxes_scaled[ib, 3].item()
-                    if w > h:
-                        boxes_scaled[ib, 2], boxes_scaled[ib, 3] = h, w
+                # Jittor optimization: convert to numpy BEFORE loop
+                # PyTorch: keep as tensor (CUDA ops are async, .item() is cheap)
+                if BACKEND == "jittor":
+                    boxes_np = boxes_scaled.numpy()
 
-                for box in boxes_scaled:
-                    cx_g, cy_g = box[0], box[1]  # grid-cell coords (float)
-                    gx = int(cx_g)
-                    gy = int(cy_g)
-                    if gx < 0 or gx >= Ws or gy < 0 or gy >= Hs:
-                        continue
+                    # Canonicalise w/h per-box: w=short, h=long (matches anchor clustering)
+                    for ib in range(len(boxes_np)):
+                        w, h = boxes_np[ib, 2], boxes_np[ib, 3]
+                        if w > h:
+                            boxes_np[ib, 2], boxes_np[ib, 3] = h, w
 
-                    # Find best anchor by IoU of w, h only
-                    # bw,bh already canonicalised above, just use as-is
-                    bw, bh = box[2], box[3]
-                    if BACKEND == "pytorch":
-                        anchor_ws = self.anchors[s_idx, :, 0] / stride  # (A,) grid-scale
-                        anchor_hs = self.anchors[s_idx, :, 1] / stride
-                    else:
-                        anchor_ws = self.anchors[s_idx, :, 0] / stride
-                        anchor_hs = self.anchors[s_idx, :, 1] / stride
-                    ious = _wh_iou(bw, bh, anchor_ws, anchor_hs)
-                    if BACKEND == "pytorch":
-                        best_a = int(ious.argmax().item())
-                    else:
-                        # Jittor argmax returns tuple (indices, values), get first element
-                        best_a = int(ious.argmax(dim=0)[0].item())
+                    # Process boxes - all operations now on CPU (numpy)
+                    for box in boxes_np:
+                        cx_g, cy_g = box[0], box[1]  # grid-cell coords (float)
+                        gx = int(cx_g)
+                        gy = int(cy_g)
+                        if gx < 0 or gx >= Ws or gy < 0 or gy >= Hs:
+                            continue
 
-                    # Fill target
-                    tgt[b, best_a, 0, gy, gx] = cx_g - gx                  # tx
-                    tgt[b, best_a, 1, gy, gx] = cy_g - gy                  # ty
-                    tgt[b, best_a, 2, gy, gx] = log_fn(
-                        bw / (anchor_ws[best_a] + 1e-8) + 1e-8)             # tw
-                    tgt[b, best_a, 3, gy, gx] = log_fn(
-                        bh / (anchor_hs[best_a] + 1e-8) + 1e-8)             # th
-                    tgt[b, best_a, 4, gy, gx] = box[4] / 90.0               # R in [-90,90) → [-1,1)
-                    tgt[b, best_a, 5, gy, gx] = 1.0                         # obj = 1
-                    obj_mask[b, best_a, gy, gx] = 1.0
-                    noobj_mask[b, best_a, gy, gx] = 0.0
+                        # Find best anchor by IoU of w, h only
+                        bw, bh = box[2], box[3]
+
+                        # Compute IoU on CPU (no GPU sync)
+                        inter_w = np.minimum(bw, anchor_ws)
+                        inter_h = np.minimum(bh, anchor_hs)
+                        inter = inter_w * inter_h
+                        union = bw * bh + anchor_ws * anchor_hs - inter + 1e-8
+                        ious = inter / union
+                        best_a = int(np.argmax(ious))
+
+                        # Fill target
+                        tgt[b, best_a, 0, gy, gx] = cx_g - gx                  # tx
+                        tgt[b, best_a, 1, gy, gx] = cy_g - gy                  # ty
+                        tgt[b, best_a, 2, gy, gx] = log_fn(
+                            bw / (anchor_ws[best_a] + 1e-8) + 1e-8)             # tw
+                        tgt[b, best_a, 3, gy, gx] = log_fn(
+                            bh / (anchor_hs[best_a] + 1e-8) + 1e-8)            # th
+                        tgt[b, best_a, 4, gy, gx] = box[4] / 90.0               # R in [-90,90) → [-1,1)
+                        tgt[b, best_a, 5, gy, gx] = 1.0                         # obj = 1
+                        obj_mask[b, best_a, gy, gx] = 1.0
+                        noobj_mask[b, best_a, gy, gx] = 0.0
+                else:
+                    # PyTorch: use tensor operations (async CUDA, .item() is cheap)
+                    for ib in range(boxes_scaled.shape[0]):
+                        w, h = boxes_scaled[ib, 2].item(), boxes_scaled[ib, 3].item()
+                        if w > h:
+                            boxes_scaled[ib, 2], boxes_scaled[ib, 3] = h, w
+
+                    for box in boxes_scaled:
+                        cx_g, cy_g = box[0], box[1]  # grid-cell coords (float)
+                        gx = int(cx_g)
+                        gy = int(cy_g)
+                        if gx < 0 or gx >= Ws or gy < 0 or gy >= Hs:
+                            continue
+
+                        # Find best anchor by IoU of w, h only
+                        bw, bh = box[2], box[3]
+                        ious = _wh_iou(bw, bh, anchor_ws, anchor_hs)
+                        best_a = int(ious.argmax())
+
+                        # Fill target
+                        tgt[b, best_a, 0, gy, gx] = cx_g - gx                  # tx
+                        tgt[b, best_a, 1, gy, gx] = cy_g - gy                  # ty
+                        tgt[b, best_a, 2, gy, gx] = log_fn(
+                            bw / (anchor_ws[best_a] + 1e-8) + 1e-8)             # tw
+                        tgt[b, best_a, 3, gy, gx] = log_fn(
+                            bh / (anchor_hs[best_a] + 1e-8) + 1e-8)            # th
+                        tgt[b, best_a, 4, gy, gx] = box[4] / 90.0               # R in [-90,90) → [-1,1)
+                        tgt[b, best_a, 5, gy, gx] = 1.0                         # obj = 1
+                        obj_mask[b, best_a, gy, gx] = 1.0
+                        noobj_mask[b, best_a, gy, gx] = 0.0
 
             # ---- Box loss (MSE on tx, ty, tw, th, tR for positives) ----
             box_pred = pred[:, :, :5, :, :]   # (B, A, 5, Hs, Ws)
