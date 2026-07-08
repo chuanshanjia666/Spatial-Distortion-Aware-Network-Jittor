@@ -21,7 +21,7 @@ PFDAug is applied online (in ``__getitem__``) when the config enables it
 and the dataset is in training mode.  See ``config.PFDAUG_ENABLED``.
 
 Returns (image, boxes, labels) where:
-  - image:  (C, H, W) float32 tensor, normalized to [0, 1]
+  - image:  (C, H, W) float32 tensor, normalized with ImageNet mean/std
   - boxes:  (N, 5) float32 tensor of [cx, cy, w, h, R] in pixels
   - labels: (N,) int64 tensor of class IDs
 """
@@ -34,7 +34,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from config import BACKEND, INPUT_SIZE, PFDAUG_ENABLED, PFDAUG_K, PFDAUG_P
+from config import BACKEND, INPUT_SIZE, PFDAUG_ENABLED, PFDAUG_K, PFDAUG_P, IMAGENET_MEAN, IMAGENET_STD
 from datasets.pfdaug import PFDAug
 
 # ---------------------------------------------------------------------------
@@ -74,11 +74,15 @@ else:  # jittor
 
 
 def _pil_to_float_tensor(pil_img):
-    """Convert a PIL image to a (C, H, W) float32 array normalized to [0, 1]."""
-    arr = np.array(pil_img, dtype=np.float32)
+    """Convert a PIL image to a (C, H, W) float32 array normalized with ImageNet stats."""
+    arr = np.array(pil_img, dtype=np.float32) / 255.0
     if arr.ndim == 2:
         arr = np.stack([arr] * 3, axis=-1)
-    return arr.transpose(2, 0, 1) / 255.0
+    # ImageNet 标准化: (x - mean) / std
+    mean = np.array(IMAGENET_MEAN, dtype=np.float32).reshape(1, 1, 3)
+    std = np.array(IMAGENET_STD, dtype=np.float32).reshape(1, 1, 3)
+    arr = (arr - mean) / std
+    return arr.transpose(2, 0, 1)
 
 
 def _letterbox_resize(image_np, boxes_np, target_size):
@@ -420,6 +424,10 @@ if __name__ == "__main__":
         for i in range(min(8, n)):
             img_tensor, boxes_tensor, labels_tensor = ds[i]
             img = img_tensor.cpu().numpy().transpose(1, 2, 0)
+            # 反标准化以可视化
+            mean = np.array(IMAGENET_MEAN, dtype=np.float32).reshape(1, 1, 3)
+            std = np.array(IMAGENET_STD, dtype=np.float32).reshape(1, 1, 3)
+            img = img * std + mean
             img = (np.clip(img, 0, 1) * 255).astype(np.uint8).copy()
             boxes = boxes_tensor.cpu().numpy()
 
@@ -440,3 +448,9 @@ if __name__ == "__main__":
             print(f"  sample 0: img={tuple(img.shape)}, boxes={boxes.shape}, labels={labels.shape}")
         else:
             print(f"  sample 0: img={img.shape}, boxes={boxes.shape}, labels={labels.shape}")
+        # 可视化验证：反标准化后检查图像范围
+        img_np = img.cpu().numpy().transpose(1, 2, 0)
+        mean = np.array(IMAGENET_MEAN, dtype=np.float32).reshape(1, 1, 3)
+        std = np.array(IMAGENET_STD, dtype=np.float32).reshape(1, 1, 3)
+        img_np = img_np * std + mean
+        print(f"  img range after denorm: [{img_np.min():.3f}, {img_np.max():.3f}]")

@@ -11,6 +11,11 @@ TRAIN_DATASETS = ["habbof[train]"]
 VAL_DATASETS   = ["habbof[val]"]
 TEST_DATASETS  = ["habbof[test]"]
 
+# ImageNet 标准化参数（用于预训练 backbone 的输入归一化）
+# 与 MMDetection YOLOv3 预训练时使用的参数一致
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD  = [0.229, 0.224, 0.225]
+
 # ---------------------------------------------------------------------------
 # PFDAug — online distortion augmentation (paper Section IV)
 # ---------------------------------------------------------------------------
@@ -28,7 +33,7 @@ INPUT_SIZE = 416            # input image size (square: 608×608)
 # Gradient accumulation: when enabled, use smaller per-step batches
 # and replace BatchNorm with GroupNorm (BN is unstable with small micro-batches).
 USE_ACCUMULATION_STEP = True
-STEP_BATCH_SIZE = 1 if USE_ACCUMULATION_STEP else BATCH_SIZE
+STEP_BATCH_SIZE = 8 if USE_ACCUMULATION_STEP else BATCH_SIZE
 GN_NUM_GROUPS = 32          # GroupNorm groups (auto-clamped to divisor of channels)
 
 # Mixed precision (FP16) — reduces GPU memory, speeds up training
