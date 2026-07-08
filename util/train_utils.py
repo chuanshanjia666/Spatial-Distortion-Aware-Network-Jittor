@@ -216,34 +216,39 @@ def build_datasets(train_specs, val_specs):
         train = ConcatDataset(train_ds) if train_ds else None
         val = ConcatDataset(val_ds) if val_ds else None
     else:
-        # Jittor equivalent: simple concat via ConcatDataset
-        train = _JittorConcatDataset(train_ds) if train_ds else None
-        val = _JittorConcatDataset(val_ds) if val_ds else None
+        from jittor.dataset import Dataset
+
+        class ConcatDataset(Dataset):
+            """Jittor ConcatDataset that supports multiprocess prefetching."""
+
+            def __init__(self, datasets):
+                super().__init__()
+                self.datasets = datasets
+                self._lengths = [len(d) for d in datasets]
+                self._cumsum = [0]
+                for l in self._lengths:
+                    self._cumsum.append(self._cumsum[-1] + l)
+                self.total = self._cumsum[-1]
+                self.set_attrs(total_len=self.total, keep_numpy_array=True)
+
+            def __getitem__(self, idx):
+                ds_idx = 0
+                for cs, cl in zip(self._cumsum[:-1], self._cumsum[1:]):
+                    if cs <= idx < cl:
+                        break
+                    ds_idx += 1
+                local_idx = idx - self._cumsum[ds_idx]
+                return self.datasets[ds_idx][local_idx]
+
+            def collate_batch(self, batch):
+                """Return raw batch list, let DataLoader apply collate_fn in main process."""
+                return batch
+
+        train = ConcatDataset(train_ds) if train_ds else None
+        val = ConcatDataset(val_ds) if val_ds else None
     return train, val, resolved_anchors
 
 
-class _JittorConcatDataset:
-    """Minimal ConcatDataset for Jittor (iterates all sub-datasets)."""
-
-    def __init__(self, datasets):
-        self.datasets = datasets
-        self._lengths = [len(d) for d in datasets]
-        self._cumsum = [0]
-        for l in self._lengths:
-            self._cumsum.append(self._cumsum[-1] + l)
-        self.total = self._cumsum[-1]
-
-    def __len__(self):
-        return self.total
-
-    def __getitem__(self, idx):
-        ds_idx = 0
-        for cs, cl in zip(self._cumsum[:-1], self._cumsum[1:]):
-            if cs <= idx < cl:
-                break
-            ds_idx += 1
-        local_idx = idx - self._cumsum[ds_idx]
-        return self.datasets[ds_idx][local_idx]
 
 
 # ===================================================================

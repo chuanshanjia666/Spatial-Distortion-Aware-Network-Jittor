@@ -87,54 +87,50 @@ if BACKEND == "pytorch":
 
 
 # ---------------------------------------------------------------------------
-# Jittor DataLoader with multi-threaded prefetch
+# Jittor DataLoader: use native Dataset with multiprocessing prefetch
 # ---------------------------------------------------------------------------
 
 if BACKEND == "jittor":
-    import math
-
     class DataLoader:
-        """Simple DataLoader for Jittor without threading complications."""
+        """Jittor DataLoader using native Dataset with multiprocess prefetching.
+
+        Jittor's Dataset has built-in support for:
+        - Multi-process data loading via num_workers
+        - RingBuffer-based prefetch mechanism
+        - Worker status monitoring via display_worker_status()
+        """
 
         def __init__(self, dataset, batch_size=1, shuffle=False,
-                     num_workers=0, collate_fn=None, pin_memory=False,
+                     num_workers=4, collate_fn=None, pin_memory=False,
                      drop_last=False, prefetch_factor=2):
+            # Jittor Dataset.set_attrs() enables multiprocess prefetching
+            self._dataset = dataset.set_attrs(
+                batch_size=batch_size,
+                shuffle=shuffle,
+                drop_last=drop_last,
+                num_workers=num_workers,
+                keep_numpy_array=False,
+            )
+            self._collate_fn = collate_fn
             self.dataset = dataset
             self.batch_size = batch_size
             self.shuffle = shuffle
-            self.collate_fn = collate_fn
-            self.drop_last = drop_last
             self.num_workers = num_workers
-
-            ds_len = len(dataset)
-            if drop_last:
-                self._num_batches = ds_len // batch_size
-            else:
-                self._num_batches = math.ceil(ds_len / batch_size)
+            self.collate_fn = collate_fn
+            self.pin_memory = pin_memory
+            self.drop_last = drop_last
+            self._len = len(self._dataset)
 
         def __len__(self):
-            return self._num_batches
+            return self._len
 
         def __iter__(self):
-            ds_len = len(self.dataset)
-            indices = list(range(ds_len))
-            if self.shuffle:
-                import numpy as np
-                np.random.shuffle(indices)
-
-            batch = []
-            for idx in indices:
-                batch.append(self.dataset[idx])
-                if len(batch) == self.batch_size:
-                    yield self._collate(batch)
-                    batch = []
-            if batch and not self.drop_last:
-                yield self._collate(batch)
-
-        def _collate(self, batch):
-            if self.collate_fn is not None:
-                return self.collate_fn(batch)
-            return batch
+            for batch in self._dataset:
+                if self._collate_fn is not None:
+                    # Apply collate_fn to unpacked batch
+                    yield self._collate_fn(batch)
+                else:
+                    yield batch
 
 
 # ---------------------------------------------------------------------------
