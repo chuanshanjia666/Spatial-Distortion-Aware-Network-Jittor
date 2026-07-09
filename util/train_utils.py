@@ -9,7 +9,8 @@ Supports both PyTorch and Jittor backends.
 
 import numpy as np
 from config import (BACKEND, ANCHORS, STRIDES, BOX_FIELDS, INPUT_SIZE,
-                    DEVICE, LR, MIN_LR, WARMUP_ITERS, ANCHORS_AUTO_CLUSTER)
+                    DEVICE, LR, MIN_LR, WARMUP_ITERS, ANCHORS_AUTO_CLUSTER,
+                    MAX_DETECTIONS)
 
 if BACKEND == "pytorch":
     import torch
@@ -24,8 +25,12 @@ else:
 #  Prediction decoder
 # ===================================================================
 
-def decode_predictions(predictions, conf_thresh=0.3, anchors=None):
+def decode_predictions(predictions, conf_thresh=0.3, anchors=None,
+                       max_detections=None):
     """Decode YOLO-style outputs → per-image (boxes, scores, labels) — vectorised.
+
+    GPU → CPU synchronisation is done ONCE per detection scale (not per image),
+    which dramatically reduces Jittor backend validation overhead.
 
     Args:
         predictions: list of 3 tensors (B, A*6, Hs, Ws).
@@ -33,6 +38,8 @@ def decode_predictions(predictions, conf_thresh=0.3, anchors=None):
         anchors:     optional override for anchors, same shape as config.ANCHORS
                      (list of 3 lists, each with A (w,h) pairs).  If None, uses
                      config.ANCHORS.
+        max_detections: if set, keep only the top-K detections per image by
+                     confidence score after decoding (before NMS).
 
     Returns:
         List of (boxes, scores, labels) per batch item.
@@ -42,22 +49,27 @@ def decode_predictions(predictions, conf_thresh=0.3, anchors=None):
     """
     _anchors = anchors if anchors is not None else ANCHORS
     B = predictions[0].shape[0]
+
+    # ---- Phase 1: batch GPU→CPU (only 3 syncs, not B×3) ----
+    scales_np = []  # list of (A, B, 6, H, W) numpy arrays, one per scale
+    for s_idx, (pred, stride) in enumerate(zip(predictions, STRIDES)):
+        A = len(_anchors[s_idx])
+        _, _, Hs, Ws = pred.shape
+        if BACKEND == "pytorch":
+            pred_np = pred.view(B, A, BOX_FIELDS, Hs, Ws).detach().cpu().numpy()
+        else:
+            pred_np = pred.view(B, A, BOX_FIELDS, Hs, Ws).numpy()
+        scales_np.append((s_idx, stride, pred_np))
+
+    # ---- Phase 2: per-image decode on CPU (pure numpy, no GPU sync) ----
     all_dets = []
-
     for b in range(B):
-        img_boxes, img_scores, img_labels = [], [], []
-        for s_idx, (pred, stride) in enumerate(zip(predictions, STRIDES)):
+        img_boxes, img_scores = [], []
+        for s_idx, stride, pred_np in scales_np:
             A = len(_anchors[s_idx])
-            _, _, Hs, Ws = pred.shape
-
-            # (A, 6, H, W) → numpy, one image
-            if BACKEND == "pytorch":
-                pred_np = pred[b].view(A, BOX_FIELDS, Hs, Ws).detach().cpu().numpy()
-            else:
-                pred_np = pred[b].view(A, BOX_FIELDS, Hs, Ws).numpy()
 
             # Confidence: sigmoid on channel 5 → (A, H, W)
-            obj = 1.0 / (1.0 + np.exp(-pred_np[:, 5, :, :]))
+            obj = 1.0 / (1.0 + np.exp(-pred_np[b, :, 5, :, :]))
             mask = obj >= conf_thresh
             a_idx, gy, gx = np.where(mask)
 
@@ -65,11 +77,11 @@ def decode_predictions(predictions, conf_thresh=0.3, anchors=None):
                 continue
 
             # Gather predictions for positive cells: (K,) where K = mask.sum()
-            tx = pred_np[a_idx, 0, gy, gx]
-            ty = pred_np[a_idx, 1, gy, gx]
-            tw = pred_np[a_idx, 2, gy, gx]
-            th = pred_np[a_idx, 3, gy, gx]
-            tR = pred_np[a_idx, 4, gy, gx]
+            tx = pred_np[b, a_idx, 0, gy, gx]
+            ty = pred_np[b, a_idx, 1, gy, gx]
+            tw = pred_np[b, a_idx, 2, gy, gx]
+            th = pred_np[b, a_idx, 3, gy, gx]
+            tR = pred_np[b, a_idx, 4, gy, gx]
 
             scores_k = obj[a_idx, gy, gx]
 
@@ -86,13 +98,22 @@ def decode_predictions(predictions, conf_thresh=0.3, anchors=None):
             boxes_k = np.stack([cx, cy, w, h, R], axis=-1).astype(np.float32)
             img_boxes.append(boxes_k)
             img_scores.append(scores_k.astype(np.float32))
-            img_labels.append(np.zeros(len(boxes_k), dtype=np.int64))
 
         if img_boxes:
+            boxes_all = np.concatenate(img_boxes, axis=0)
+            scores_all = np.concatenate(img_scores, axis=0)
+
+            # Top-K truncation (keeps NMS fast, config.MAX_DETECTIONS default)
+            topk = max_detections if max_detections is not None else MAX_DETECTIONS
+            if topk is not None and len(scores_all) > topk:
+                topk_idx = np.argpartition(-scores_all, topk)[:topk]
+                boxes_all = boxes_all[topk_idx]
+                scores_all = scores_all[topk_idx]
+
             all_dets.append((
-                np.concatenate(img_boxes, axis=0),
-                np.concatenate(img_scores, axis=0),
-                np.concatenate(img_labels, axis=0),
+                boxes_all,
+                scores_all,
+                np.zeros(len(boxes_all), dtype=np.int64),
             ))
         else:
             all_dets.append((
