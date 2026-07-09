@@ -32,12 +32,12 @@ if BACKEND == "pytorch":
 else:
     import jittor as jt
 
-    jt.flags.enable_tuner = 1
-    jt.flags.use_tensorcore = 1
-    jt.flags.use_cuda_managed_allocator = 1
-    # jt.flags.auto_mixed_precision_level = 4  # 智能 fp16
-    jt.flags.lazy_execution = 1
-    jt.flags.use_threading = 1
+    # jt.flags.enable_tuner = 1
+    # jt.flags.use_tensorcore = 1
+    # jt.flags.use_cuda_managed_allocator = 1
+    # # jt.flags.auto_mixed_precision_level = 4  # 智能 fp16
+    # jt.flags.lazy_execution = 1
+    # jt.flags.use_threading = 1
 
 from util import (
     compute_map, compute_map_coco, SDALoss,
@@ -271,8 +271,11 @@ def main():
             ckpt = jt.load(resume_path)
         print(f"[DEBUG] Checkpoint loaded, loading model state...")
         model.load_state_dict(ckpt['model_state'])
-        print(f"[DEBUG] Model state loaded, loading optimizer state...")
-        optimizer.load_state_dict(ckpt['optimizer_state'])
+        if ckpt.get('optimizer_state') is not None:
+            print(f"[DEBUG] Model state loaded, loading optimizer state...")
+            optimizer.load_state_dict(ckpt['optimizer_state'])
+        else:
+            print(f"[DEBUG] No optimizer state in checkpoint (weights-only save)")
         start_epoch = ckpt.get('epoch', 0)
         global_step = ckpt.get('global_step', 0)
         if scaler is not None and ckpt.get('scaler_state'):
@@ -288,10 +291,22 @@ def main():
 
     def _save_checkpoint(step, ep):
         scaler_state = scaler.state_dict() if (USE_FP16 and BACKEND == "pytorch") else None
+
+        if BACKEND == "jittor":
+            # Jittor: 只保存 model weights。
+            # optimizer state_dict (Adam momentum/variance) 的 .numpy()
+            # 底层必须走 cudaMallocHost，Docker ulimit -l=64MB 不够，
+            # 暂无绕过的办法。
+            model_state = model.state_dict()
+            opt_state = None
+        else:
+            model_state = model.state_dict()
+            opt_state = optimizer.state_dict()
+
         ckpt = {
             'epoch': ep,
-            'model_state': model.state_dict(),
-            'optimizer_state': optimizer.state_dict(),
+            'model_state': model_state,
+            'optimizer_state': opt_state,
             'scaler_state': scaler_state,
             'global_step': step,
         }
