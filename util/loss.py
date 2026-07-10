@@ -54,11 +54,11 @@ def _bce_loss(pred, target):
 def _wh_iou(bw, bh, aws, ahs):
     """Compute IoU between a box (bw, bh) and anchors (aws, ahs) — w/h only."""
     if BACKEND == "pytorch":
-        inter_w = torch.min(bw, aws)
-        inter_h = torch.min(bh, ahs)
+        inter_w = torch.min(bw, torch.as_tensor(aws, device=bw.device, dtype=bw.dtype))
+        inter_h = torch.min(bh, torch.as_tensor(ahs, device=bh.device, dtype=bh.dtype))
     else:
-        inter_w = jt.minimum(bw, aws)
-        inter_h = jt.minimum(bh, ahs)
+        inter_w = jt.minimum(bw, jt.array(aws))
+        inter_h = jt.minimum(bh, jt.array(ahs))
     inter = inter_w * inter_h
     union = bw * bh + aws * ahs - inter + 1e-8
     return inter / union

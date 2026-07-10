@@ -1,11 +1,11 @@
-# BACKEND = "pytorch"
-BACKEND = "jittor"
+BACKEND = "pytorch"
+# BACKEND = "jittor"
 DEVICE = "cuda"
 
 # ---------------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------------
-NUM_WORKERS = 4
+NUM_WORKERS = 8
 # TRAIN_DATASETS = ["cepdof[train]","wepdtof[train]"]
 TRAIN_DATASETS = ["habbof[train]"]
 VAL_DATASETS   = ["habbof[val]"]
@@ -50,9 +50,9 @@ MOMENTUM = 0.9
 WEIGHT_DECAY = 0.0001
 MAX_ITER = 6000             # fine-tuning iterations on fisheye datasets
 WARMUP_ITERS = 20
-VALIDATE_INTERVAL = 100        # validate every N iterations
-SAVE_INTERVAL = 100            # save checkpoint every N iterations
-LOG_INTERVAL = 10              # print training log every N iterations
+VALIDATE_INTERVAL = 20        # validate every N iterations
+SAVE_INTERVAL = 50            # save checkpoint every N iterations
+LOG_INTERVAL = 1              # print training log every N iterations
 RESUME = None               # explicit checkpoint path (takes priority over AUTO_RESUME)
 AUTO_RESUME = True          # if True and RESUME is None, auto-load latest checkpoint from OUTPUT_DIR
 OUTPUT_DIR = "output"       # directory for saving checkpoints

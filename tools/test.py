@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
     BACKEND, DEVICE, TEST_DATASETS, TRAIN_DATASETS, OUTPUT_DIR, INPUT_SIZE,
     CONF_THRESH, NMS_IOU_THRESH, IOU_THRESH, RANDOM_SEED,
+    IMAGENET_MEAN, IMAGENET_STD,
 )
 
 # 测试相关配置
@@ -19,12 +20,12 @@ if BACKEND == "pytorch":
     import torch
 else:
     import jittor as jt
-    jt.flags.enable_tuner = 1
-    jt.flags.use_tensorcore = 1
-    jt.flags.use_cuda_managed_allocator = 1
-    # jt.flags.auto_mixed_precision_level = 4  # 智能 fp16
-    jt.flags.lazy_execution = 1
-    jt.flags.use_threading = 1
+    # jt.flags.enable_tuner = 1
+    # jt.flags.use_tensorcore = 1
+    # jt.flags.use_cuda_managed_allocator = 1
+    # # jt.flags.auto_mixed_precision_level = 4  # 智能 fp16
+    # jt.flags.lazy_execution = 1
+    # jt.flags.use_threading = 1
 
 from util import (
     decode_predictions, build_datasets, build_model, oriented_nms,
@@ -169,7 +170,9 @@ def main():
     if test_ds is None:
         raise RuntimeError(f"无法加载测试数据集: {TEST_DATASETS}")
 
-    print(f"\n测试数据集: {len(test_ds)} 样本")
+    # Jittor Dataset 的 __len__ 有 bug，尝试用 .total
+    ds_length = getattr(test_ds, 'total', None) or len(test_ds)
+    print(f"\n测试数据集: {ds_length} 样本")
 
     # 获取类别信息
     if hasattr(test_ds, 'class_names'):
@@ -221,7 +224,7 @@ def main():
 
     start_time = time.time()
 
-    for i in range(len(test_ds)):
+    for i in range(ds_length):
         # 获取数据
         entry = test_ds[i]
         if BACKEND == "pytorch":
@@ -275,11 +278,15 @@ def main():
         if (i + 1) % 50 == 0 or i == 0:
             elapsed = time.time() - start_time
             speed = (i + 1) / elapsed if elapsed > 0 else 0
-            print(f"  [{i+1:4d}/{len(test_ds)}] 速度: {speed:.1f} img/s")
+            print(f"  [{i+1:4d}/{ds_length}] 速度: {speed:.1f} img/s")
 
         # 可视化前 NUM_VIS 张
         if NUM_VIS > 0 and i < NUM_VIS:
-            img = (img_np.transpose(1, 2, 0) * 255).astype(np.uint8).copy()
+            # 反标准化：从 ImageNet mean/std 归一化恢复原始图像
+            mean = np.array(IMAGENET_MEAN, dtype=np.float32).reshape(1, 1, 3)
+            std = np.array(IMAGENET_STD, dtype=np.float32).reshape(1, 1, 3)
+            img = img_np.transpose(1, 2, 0) * std + mean
+            img = (np.clip(img, 0, 1) * 255).astype(np.uint8).copy()
             vis_img = visualize_detection(
                 img, pred_boxes, pred_scores, pred_labels,
                 gt_boxes=boxes,
@@ -294,9 +301,9 @@ def main():
             jt.gc()
 
     inference_time = time.time() - start_time
-    speed = len(test_ds) / inference_time
+    speed = ds_length / inference_time
 
-    print(f"\n推理完成! 耗时: {inference_time:.2f}s, 速度: {speed:.1f} img/s")
+    print(f"\n推理完成! 耗时: {inference_time:.2f}s, 速度: {ds_length/inference_time:.1f} img/s")
 
     # 计算 mAP
     print("\n" + "=" * 60)

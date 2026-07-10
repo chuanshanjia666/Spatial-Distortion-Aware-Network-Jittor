@@ -23,6 +23,7 @@ import os
 import sys
 import glob
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import BACKEND, TRAIN_DATASETS, OUTPUT_DIR
@@ -75,25 +76,67 @@ def upload_via_cli(model_dir, repo_id, revision, token=None):
     print("[CLI] Upload completed successfully.")
 
 
-def upload_via_sdk(files, repo_id, revision, token=None):
-    """Upload files via ModelScope Python SDK — one file per ``upload_file``."""
+def _upload_single(api, repo_id, local_path, remote_path, retries=5, initial_backoff=2.0):
+    """Upload a single file with retry on 429 commit-lock conflict."""
+    import time
+    import random
+
+    size_mb = os.path.getsize(local_path) / 1e6
+    for attempt in range(retries):
+        try:
+            print(f"[SDK] Uploading {os.path.basename(local_path)} ({size_mb:.1f} MB) [{attempt+1}/{retries}] ...")
+            api.upload_file(
+                repo_id=repo_id,
+                path_or_fileobj=local_path,
+                path_in_repo=remote_path,
+                repo_type="model",
+            )
+            print(f"[SDK]   ✓ {os.path.basename(local_path)} done.")
+            return
+        except Exception as e:
+            # Check for commit lock 429
+            err_str = str(e)
+            if "429" in err_str or "commit lock" in err_str or "10030000001" in err_str:
+                wait = initial_backoff * (2 ** attempt) + random.uniform(0, 1)
+                print(f"[SDK]   ⚠  commit lock busy, retrying in {wait:.1f}s ...")
+                time.sleep(wait)
+            else:
+                print(f"[SDK]   ✗ {os.path.basename(local_path)} FAILED: {e}")
+                raise
+    # All retries exhausted
+    raise RuntimeError(f"{os.path.basename(local_path)} failed after {retries} retries")
+
+
+def upload_via_sdk(files, repo_id, revision, token=None, max_workers=8):
+    """Upload files via ModelScope Python SDK with parallel threads."""
     from modelscope.hub.api import HubApi
 
     api = HubApi(token=token) if token else HubApi()
-    repo_path = revision  # revision = subdirectory in repo
 
+    tasks = []
     for local_path in files:
-        filename = os.path.basename(local_path)
-        remote_path = f"{repo_path}/{filename}"
+        remote_path = f"{revision}/{os.path.basename(local_path)}"
+        tasks.append((local_path, remote_path))
 
-        print(f"[SDK] Uploading {local_path} -> {repo_id}:{remote_path}  ({os.path.getsize(local_path)/1e6:.1f} MB)")
-        api.upload_file(
-            repo_id=repo_id,
-            path_or_fileobj=local_path,
-            path_in_repo=remote_path,
-            repo_type="model",
-        )
-        print(f"[SDK]   ✓ {filename} done.")
+    print(f"[SDK] Starting {max_workers} parallel upload threads for {len(tasks)} file(s) ...")
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(_upload_single, api, repo_id, lp, rp): lp
+            for lp, rp in tasks
+        }
+        failed = []
+        for future in as_completed(futures):
+            local_path = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                print(f"[SDK]   ✗ {os.path.basename(local_path)} FAILED: {e}")
+                failed.append(local_path)
+
+    if failed:
+        print(f"\n[SDK] {len(failed)} file(s) failed, see above.")
+        raise RuntimeError(f"Upload failed for: {', '.join(os.path.basename(f) for f in failed)}")
+    print(f"[SDK] All {len(files)} file(s) uploaded successfully.")
 
 
 def main():
@@ -103,9 +146,11 @@ def main():
     parser.add_argument("--repo", default="chuanshanjia666/SDA-Net",
                         help="ModelScope repo ID (default: chuanshanjia666/SDA-Net)")
     parser.add_argument("--mode", choices=["sdk", "cli"], default="sdk",
-                        help="Upload method: sdk (per-file API) or cli (directory upload)")
+                        help="Upload method: sdk (parallel API, default) or cli")
     parser.add_argument("--latest-only", action="store_true",
                         help="Upload only the latest checkpoint")
+    parser.add_argument("-w", "--workers", type=int, default=2,
+                        help="Number of parallel upload threads (default: 2; keep low to avoid commit-lock conflict)")
     args = parser.parse_args()
 
     if not args.token:
@@ -137,7 +182,7 @@ def main():
         print(f"         - {os.path.basename(f)} ({os.path.getsize(f)/1e6:.1f} MB)")
 
     if args.mode == "sdk":
-        upload_via_sdk(files, args.repo, revision, args.token)
+        upload_via_sdk(files, args.repo, revision, args.token, max_workers=args.workers)
     else:
         # CLI mode: put selected files into a temp dir, then upload
         import tempfile
