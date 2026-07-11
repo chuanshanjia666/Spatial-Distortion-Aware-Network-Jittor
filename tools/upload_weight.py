@@ -30,10 +30,11 @@ from config import BACKEND, TRAIN_DATASETS, OUTPUT_DIR
 
 
 def build_repo_path():
-    """Build the remote directory path: e.g. ``jittor-habbof[train]``."""
-    datasets_str = "+".join(TRAIN_DATASETS)           # e.g. "habbof[train]" or "cepdof[train]+wepdtof[train]"
-    datasets_str = datasets_str.replace("[", "-").replace("]", "")  # clean brackets for URL safety
-    return f"{BACKEND}-{datasets_str}"                # e.g. "jittor-habbof-train"
+    """Build the remote directory path: e.g. ``jittor-cepdof-wepdtof-habbof-train``."""
+    # 提取数据集主名（去掉 [train] 后缀），用 - 连接，最后加 -train
+    dataset_names = [d.split("[")[0] for d in TRAIN_DATASETS]  # e.g. ['cepdof', 'wepdtof', 'habbof']
+    datasets_str = "-".join(dataset_names) + "-train"           # e.g. "cepdof-wepdtof-habbof-train"
+    return f"{BACKEND}-{datasets_str}"                           # e.g. "jittor-cepdof-wepdtof-habbof-train"
 
 
 def find_model_files(output_dir, backend):

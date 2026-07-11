@@ -280,6 +280,7 @@ DATASET_PRESETS = {
     "fisheye8k":  "datasets/FishEye8k/annotations",
     "cepdof":     "datasets/CEPDOF/annotations",
     "wepdtof":    "datasets/WEPDTOF/annotations",
+    "loaf":       "datasets/LOAF/annotations/resolution_512",
 }
 
 # Presets for single-file datasets (no split → one file per scene).
@@ -301,6 +302,10 @@ SINGLE_FILE_PRESETS = {
     "wepdtof-train":  "datasets/WEPDTOF/annotations/train.json",
     "wepdtof-val":    "datasets/WEPDTOF/annotations/val.json",
     "wepdtof-test":   "datasets/WEPDTOF/annotations/test.json",
+    "loaf-all":      "datasets/LOAF/annotations/all.json",
+    "loaf-train":    "datasets/LOAF/annotations/train.json",
+    "loaf-val":      "datasets/LOAF/annotations/val.json",
+    "loaf-test":     "datasets/LOAF/annotations/test.json",
 }
 
 
