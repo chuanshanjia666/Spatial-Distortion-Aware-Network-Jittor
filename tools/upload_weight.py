@@ -52,8 +52,6 @@ def upload_via_cli(model_dir, repo_id, revision, token=None):
     Upload files via ModelScope CLI (fallback, more robust for large files).
     Files must be placed in a temp dir matching the revision structure.
     """
-    import tempfile
-    import shutil
     import subprocess
 
     # ModelScope CLI uploads the whole directory as a revision.
@@ -184,13 +182,16 @@ def main():
     if args.mode == "sdk":
         upload_via_sdk(files, args.repo, revision, args.token, max_workers=args.workers)
     else:
-        # CLI mode: put selected files into a temp dir, then upload
+        # CLI mode: put selected files into a temp dir with revision subdirectory,
+        # then upload. This matches SDK's path_in_repo=revision/filename structure.
         import tempfile
         import shutil
         with tempfile.TemporaryDirectory() as tmpdir:
+            revision_subdir = os.path.join(tmpdir, revision)
+            os.makedirs(revision_subdir)
             for f in files:
-                shutil.copy2(f, os.path.join(tmpdir, os.path.basename(f)))
-            upload_via_cli(tmpdir, args.repo, revision, args.token)
+                shutil.copy2(f, os.path.join(revision_subdir, os.path.basename(f)))
+            upload_via_cli(revision_subdir, args.repo, ".", args.token)
 
     print(f"\n✓ Done. Model available at: https://www.modelscope.cn/models/{args.repo}/summary")
     print(f"  Revision (subdirectory): {revision}")

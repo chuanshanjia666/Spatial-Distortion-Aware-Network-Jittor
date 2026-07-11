@@ -29,6 +29,9 @@ python datasets/datasets.py
 
 # Train (all params from config.py, no CLI args)
 python tools/train.py
+
+# Test and evaluate
+python tools/test.py
 ```
 
 ## Architecture
@@ -56,11 +59,14 @@ tools/
   merge_wepdtof.py           # Merge WEPDTOF scene JSONs → all.json
   pfdaug.py                  # CLI offline PFDAug (standalone, imports core from datasets/)
   train.py                   # Training entry point (no CLI args, all params from config.py)
+  test.py                    # Test/evaluation entry point
+  upload_weight.py           # Upload trained weights
 util/
   __init__.py                # exports metrics, loss, train_utils
   metrics.py                 # Rotated IoU, AP/mAP, NMS, box format conversion
   loss.py                    # SDALoss (YOLOv3-style oriented bbox loss)
   train_utils.py             # decode, collate, build_datasets, build_model, LR scheduling
+  anchor_cluster.py          # K-means anchor clustering
 ```
 
 ## Key design decisions
@@ -79,3 +85,7 @@ MMDetection DarkNet53 uses keys like `backbone.conv_res_block1.res0.conv1.conv.w
 
 ### SDAConv — output mixing, not weight mixing
 The paper's Eq. 2 combines kernel *weights*. Our implementation runs each base conv independently then mixes *outputs* weighted by the learned coefficient vector M — mathematically equivalent but simpler.
+
+### AMP mixed precision
+PyTorch: `torch.amp.GradScaler` + autocast for FP16.
+Jittor 1.x: **No** GradScaler or autocast equivalent. `model.float16()` doesn't provide FP32 master weights, causing gradient overflow. Use FP32 only on Jittor.

@@ -423,7 +423,10 @@ def main():
         if USE_FP16 and BACKEND == "pytorch":
             scaler.scale(loss).backward()
         else:
-            optimizer.backward(loss)
+            if BACKEND == "jittor":
+                optimizer.backward(loss)
+            else:
+                loss.backward()
 
         chunk_count += 1
         chunk_loss += raw_loss

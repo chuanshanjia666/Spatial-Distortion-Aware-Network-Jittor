@@ -52,15 +52,24 @@ def _validate(model, loader, anchors, conf_thresh=0.3, max_per_image=500):
     model.eval()
     preds, targets = [], []
 
+    t_data = t_forward = t_post = t_target = 0.0
+    n_batches = 0
+
     for batch in loader:
+        t0 = time.time()
         images, boxes_list = batch if isinstance(batch, (tuple, list)) else (batch, None)
         if DEVICE == "cuda":
             images = images.cuda()
+        t_data += time.time() - t0
+        n_batches += 1
 
+        t1 = time.time()
         with jt.no_grad():
             dets = decode_predictions(model(images), conf_thresh=conf_thresh, anchors=anchors)
+        t_forward += time.time() - t1
 
         # Cap per-image detections (top-k by score)
+        t2 = time.time()
         capped = []
         for boxes, scores, labels in dets:
             if len(scores) > max_per_image:
@@ -68,7 +77,18 @@ def _validate(model, loader, anchors, conf_thresh=0.3, max_per_image=500):
                 boxes, scores, labels = boxes[topk], scores[topk], labels[topk]
             capped.append((boxes, scores, labels))
         preds.extend(capped)
+        t_post += time.time() - t2
+
+        t3 = time.time()
         targets.extend(_extract_targets(boxes_list))
+        t_target += time.time() - t3
+
+    total = t_data + t_forward + t_post + t_target
+    print(f"  [validate] batches={n_batches}  total={total:.2f}s  "
+          f"data={t_data:.2f}s({t_data/total*100:.0f}%)  "
+          f"forward={t_forward:.2f}s({t_forward/total*100:.0f}%)  "
+          f"post={t_post:.2f}s({t_post/total*100:.0f}%)  "
+          f"target={t_target:.2f}s({t_target/total*100:.0f}%)")
     return preds, targets
 
 
@@ -138,16 +158,34 @@ def _train_epoch(model, loader, criterion, optimizer):
     model.train()
     losses = []
 
+    t_data = t_forward = t_backward = 0.0
+    n_batches = 0
+
     for batch in loader:
+        t0 = time.time()
         images, boxes_list = batch if isinstance(batch, (tuple, list)) else (batch, None)
         if DEVICE == "cuda":
             images = images.cuda()
+        t_data += time.time() - t0
+        n_batches += 1
 
-        optimizer.zero_grad()
+        t1 = time.time()
         loss = criterion(model(images), boxes_list, images)
+        t_forward += time.time() - t1
+
+        t2 = time.time()
+        optimizer.zero_grad()
         optimizer.backward(loss)
         optimizer.step()
+        t_backward += time.time() - t2
+
         losses.append(loss.numpy()[0])
+
+    total = t_data + t_forward + t_backward
+    print(f"  [train] batches={n_batches}  total={total:.2f}s  "
+          f"data={t_data:.2f}s({t_data/total*100:.0f}%)  "
+          f"forward={t_forward:.2f}s({t_forward/total*100:.0f}%)  "
+          f"backward={t_backward:.2f}s({t_backward/total*100:.0f}%)")
     return np.mean(losses)
 
 
