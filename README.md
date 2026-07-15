@@ -33,6 +33,19 @@ jittor 模型均在 WSL2 2080Ti上训练，pytorch均在  modelscope的A10 上�
 
 ![training_curves_comparison](img/training_curves_comparison.png)
 
+## 推理结果对比
+
+| 图1 | 图2 |
+|-----|-----|
+| ![torch1](img/torch1.png) | ![jittor1](img/jittor1.png) |
+| ![torch2](img/torch2.png) | ![jittor2](img/jittor2.png) |
+| ![torch3](img/torch3.png) | ![jittor3](img/jittor3.png) |
+| ![torch4](img/torch4.png) | ![jittor4](img/jittor4.png) |
+| ![torch5](img/torch5.png) | ![jittor5](img/jittor5.png) |
+| ![torch6](img/torch6.png) | ![jittor6](img/jittor6.png) |
+| ![torch7](img/torch7.png) | ![jittor7](img/jittor7.png) |
+| ![torch8](img/torch8.png) | ![jittor8](img/jittor8.png) |
+
 
 
 ## 实验结果
@@ -220,11 +233,46 @@ python tools/test.py
 
 ## 📝 引用
 
+### 论文
 ```bibtex
-@article{sdanet2026,
-  title={Towards Better Distortion Feature Learning for Object Detection in Top-View Fisheye Cameras},
-  journal={IEEE Transactions on Multimedia (TMM)},
-  year={2026}
+@ARTICLE{10814722,
+  author={Guo, Pengbo and Liu, Chengxu and Hou, Xingsong and Qian, Xueming},
+  journal={IEEE Transactions on Multimedia}, 
+  title={Towards Better Distortion Feature Learning for Object Detection in Top-View Fisheye Cameras}, 
+  year={2026},
+  volume={28},
+  pages={2106-2118},
+  doi={10.1109/TMM.2024.3521808}
+}
+```
+
+### 数据集
+```bibtex
+@InProceedings{RAPiD,
+  author={Duan, Z. and Tezcan, M.O. and Nakamura, H. and Ishwar, P. and Konrad, J.},
+  title={RAPiD: Rotation-aware People Detection in Overhead Fisheye Images},
+  booktitle={IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), OmniCV Workshop},
+  year={2020},
+  pages={},
+  doi={}
+}
+
+@inproceedings{SupervisedCounting,
+  author={Li, S. and Tezcan, M.O. and Ishwar, P. and Konrad, J.},
+  title={Supervised People Counting Using an Overhead Fisheye Camera},
+  booktitle={IEEE International Conference on Advanced Video and Signal-Based Surveillance (AVSS)},
+  year={2019},
+  pages={},
+  doi={}
+}
+
+@InProceedings{WEPDTOF,
+  author={Tezcan, M.O. and Duan, Z. and Cokbas, M. and Ishwar, P. and Konrad, J.},
+  title={WEPDTOF: A Dataset and Benchmark Algorithms for In-the-Wild People Detection and Tracking from Overhead Fisheye Cameras},
+  booktitle={IEEE/CVF Winter Conference on Applications of Computer Vision (WACV)},
+  year={2022},
+  pages={},
+  doi={}
 }
 ```
 
